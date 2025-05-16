@@ -1,8 +1,16 @@
 # distutils: language = c
 # cython: language_level=3
+# distutils: define_macros=NPY_NO_DEPRECATED_API=NPY_1_7_API_VERSION
 
 import numpy as np
+
 cimport numpy as np
+
+import logging
+
+from libc.math cimport fabs, isinf, isnan
+
+np.import_array()
 
 # Import the solver information struct and functions from solvers.h
 cdef extern from "solvers.h":
@@ -58,7 +66,7 @@ def solve_system(np.ndarray[double, ndim=2, mode="c"] A,
     ----------
     A : numpy.ndarray
         Coefficient matrix (n x n)
-    b : numpy.ndarray
+    b : : numpy.ndarray
         Right-hand side vector (n)
     method : str, optional
         Solver method to use, default is 'gaussian_elimination'
@@ -114,6 +122,59 @@ def solve_system(np.ndarray[double, ndim=2, mode="c"] A,
     else:
         return x
 
+def recommend_solver(A):
+    """
+    Recommend the most appropriate solver based on matrix diagnostics.
+
+    Parameters
+    ----------
+    A : numpy.ndarray
+        The coefficient matrix to analyze
+
+    Returns
+    -------
+    str
+        Recommended solver method name
+    """
+    # Get matrix diagnostics
+    diag = _matrix_diagnostics(A)
+
+    # For small matrices, direct methods are usually efficient
+    if diag['m'] <= 100 and diag['n'] <= 100:
+        if diag['m'] == diag['n']:  # Square matrix
+            if diag['is_sym'] and diag['is_posdef']:
+                return "cholesky"
+            elif diag['is_tri_up']:
+                return "back_substitution"
+            elif diag['is_tri_lo']:
+                return "forward_substitution"
+            elif diag['rank_est'] < min(diag['m'], diag['n']):  # Rank deficient
+                return "svd"
+            else:
+                return "lu_decomposition"
+        else:  # Rectangular matrix
+            if diag['m'] > diag['n']:  # Overdetermined
+                return "qr_decomposition"
+            else:  # Underdetermined
+                return "svd"
+
+    # For large matrices, consider sparsity and conditioning
+    else:
+        if diag['is_sparse']:
+            if diag['is_sym'] and diag['is_posdef']:
+                return "conjugate_gradient"
+            elif diag['diag_dom']:
+                return "jacobi"
+            else:
+                return "gmres"
+        else:  # Dense large matrix
+            if diag['is_sym'] and diag['is_posdef']:
+                return "cholesky"
+            elif diag['cond_est'] < 1e6:  # Well-conditioned
+                return "lu_decomposition"
+            else:  # Ill-conditioned
+                return "qr_decomposition"
+
 def list_available_solvers():
     """
     Returns a list of all available solver methods.
@@ -155,6 +216,253 @@ def list_available_solvers():
         'determinant',
         'eigenvalue_decomposition'
     ]
+
+def _matrix_diagnostics(A):
+    """
+    Compute matrix diagnostics for solver selection.
+
+    Parameters
+    ----------
+    A : numpy.ndarray
+        The coefficient matrix to analyze
+
+    Returns
+    -------
+    dict
+        Dictionary containing matrix diagnostics
+    """
+    # Initialize results dictionary with defaults
+    diagnostics = {
+        'm': 0, 'n': 0, 'nnz': 0, 'sparsity': 0.0,
+        'is_sparse': False, 'is_sym': False,
+        'is_tri_up': False, 'is_tri_lo': False,
+        'diag_dom': False, 'cond_est': float('inf'),
+        'is_posdef': False, 'rank_est': 0
+    }
+
+    # Basic matrix properties
+    cdef int m, n, nnz
+    cdef double sparsity
+    cdef bint is_sparse = False
+
+    try:
+        m, n = A.shape
+        diagnostics['m'] = m
+        diagnostics['n'] = n
+
+        # Handle sparse matrix vs dense array
+        if hasattr(A, 'nnz'):  # Check for sparse matrix without importing scipy
+            nnz = A.nnz
+            is_sparse = True
+        else:
+            # For dense matrices, count non-zeros
+            nnz = np.count_nonzero(A)
+            is_sparse = False
+
+        diagnostics['nnz'] = nnz
+
+        # Calculate sparsity
+        sparsity = nnz / (m * n) if m * n > 0 else 0.0
+        diagnostics['sparsity'] = sparsity
+        diagnostics['is_sparse'] = sparsity < 0.05
+
+        # Check for symmetry (only square matrices can be symmetric)
+        if m == n:
+            _check_symmetry(A, diagnostics)
+
+        # Check for triangular structure
+        _check_triangular(A, diagnostics)
+
+        # Check for diagonal dominance
+        if m == n:
+            _check_diag_dominance(A, diagnostics)
+
+        # Estimate condition number
+        if m == n:
+            _estimate_condition(A, diagnostics)
+
+        # Check for positive definiteness
+        if m == n and diagnostics['is_sym']:
+            _check_posdef(A, diagnostics)
+
+        # Estimate rank
+        _estimate_rank(A, diagnostics)
+
+    except Exception:
+        # Ensure we return all keys even if something fails
+        pass
+
+    return diagnostics
+
+cdef void _check_symmetry(A, dict diagnostics):
+    """Check if matrix is symmetric"""
+    cdef int m = diagnostics['m']
+    cdef double norm_diff, norm_A
+
+    try:
+        if hasattr(A, 'toarray'):  # Sparse matrix
+            diff = A - A.T
+            if hasattr(diff, 'sum'):
+                norm_diff = abs(diff).sum()
+                norm_A = abs(A).sum()
+            else:
+                # Fall back to numpy methods if sparse methods unavailable
+                diff_arr = diff.toarray() if hasattr(diff, 'toarray') else diff
+                norm_diff = np.abs(diff_arr).sum()
+                A_arr = A.toarray() if hasattr(A, 'toarray') else A
+                norm_A = np.abs(A_arr).sum()
+        else:
+            # Dense symmetry check
+            diff = A - A.T
+            norm_diff = np.linalg.norm(diff, ord=1)
+            norm_A = np.linalg.norm(A, ord=1)
+
+        diagnostics['is_sym'] = norm_diff <= 1e-12 * norm_A if norm_A > 0 else True
+    except:
+        pass
+
+cdef void _check_triangular(A, dict diagnostics):
+    """Check if matrix is triangular"""
+    try:
+        if hasattr(A, 'nonzero'):  # Sparse or dense matrix with nonzero method
+            rows, cols = A.nonzero()
+            if len(rows) > 0:
+                diagnostics['is_tri_up'] = np.all(rows <= cols)
+                diagnostics['is_tri_lo'] = np.all(rows >= cols)
+        else:
+            # Fallback
+            indices = np.nonzero(A)
+            if len(indices[0]) > 0:
+                diagnostics['is_tri_up'] = np.all(indices[0] <= indices[1])
+                diagnostics['is_tri_lo'] = np.all(indices[0] >= indices[1])
+    except:
+        pass
+
+cdef void _check_diag_dominance(A, dict diagnostics):
+    """Check if matrix is diagonally dominant"""
+    cdef int i, m = diagnostics['m']
+    cdef double row_sum
+    cdef np.ndarray[double, ndim=1] diag
+
+    try:
+        if hasattr(A, 'diagonal'):  # Sparse matrix with diagonal method
+            diag = A.diagonal()
+
+            if hasattr(A, 'toarray'):  # Sparse matrix
+                diag_dom = True
+                for i in range(m):
+                    row = A[i].toarray().flatten() if hasattr(A[i], 'toarray') else A[i]
+                    row_sum = np.sum(np.abs(row)) - np.abs(row[i])
+                    if np.abs(diag[i]) < row_sum:
+                        diag_dom = False
+                        break
+                diagnostics['diag_dom'] = diag_dom
+            else:  # Dense matrix
+                diag = np.diag(A)
+                row_sums = np.sum(np.abs(A), axis=1) - np.abs(diag)
+                diagnostics['diag_dom'] = np.all(np.abs(diag) >= row_sums)
+    except:
+        pass
+
+cdef void _estimate_condition(A, dict diagnostics):
+    """Estimate condition number of matrix"""
+    cdef int i, m = diagnostics['m'], n = diagnostics['n']
+    cdef double sigma_max = 0, sigma_min_est = float('inf')
+    cdef double norm_x, sigma_min_squared, alpha, beta
+
+    try:
+        if hasattr(A, 'todense') and m <= 2000:
+            # For small sparse matrices, convert to dense for SVD
+            s = np.linalg.svd(A.todense(), compute_uv=False)
+            diagnostics['cond_est'] = s[0] / s[-1] if s[-1] > 0 else float('inf')
+        elif not hasattr(A, 'todense') and m <= 2000:
+            # Use SVD for small dense matrices
+            s = np.linalg.svd(A, compute_uv=False)
+            diagnostics['cond_est'] = s[0] / s[-1] if s[-1] > 0 else float('inf')
+        else:
+            # Power iteration for larger matrices
+            AT = A.T.copy() if not hasattr(A, 'T') else A.T
+
+            # Estimate largest singular value with power iteration
+            x = np.random.randn(n)
+            x = x / np.linalg.norm(x)
+
+            for i in range(10):  # 10 iterations
+                if hasattr(A, 'dot'):
+                    y = A.dot(x)
+                    x = AT.dot(y)
+                else:
+                    y = np.dot(A, x)
+                    x = np.dot(AT, x)
+
+                norm_x = np.linalg.norm(x)
+                if norm_x > 0:
+                    x = x / norm_x
+                    sigma_max = norm_x
+
+            # Simplified condition number estimation for performance
+            # Use a heuristic instead of the full CG method
+            diagnostics['cond_est'] = sigma_max * m  # Rough estimate
+    except:
+        pass
+
+cdef void _check_posdef(A, dict diagnostics):
+    """Check if matrix is positive definite"""
+    cdef int m = diagnostics['m']
+
+    try:
+        if not hasattr(A, 'todense') and m <= 1000:
+            # Try Cholesky for small dense matrices
+            try:
+                np.linalg.cholesky(A)
+                diagnostics['is_posdef'] = True
+            except np.linalg.LinAlgError:
+                # Not positive definite
+                pass
+        elif not hasattr(A, 'todense') and m <= 2000:
+            # Use eigenvalues for medium-sized dense matrices
+            try:
+                eigs = np.linalg.eigvalsh(A)
+                diagnostics['is_posdef'] = np.all(eigs > -1e-10)
+            except:
+                pass
+    except:
+        pass
+
+cdef void _estimate_rank(A, dict diagnostics):
+    """Estimate matrix rank"""
+    cdef int sketch_size, m = diagnostics['m'], n = diagnostics['n']
+    cdef double tol
+
+    try:
+        sketch_size = min(50, min(m, n))
+
+        if not hasattr(A, 'todense') and min(m, n) <= 1000:
+            # For smaller dense matrices, use full SVD
+            s = np.linalg.svd(A, compute_uv=False)
+            tol = max(m, n) * np.finfo(float).eps * s[0]
+            diagnostics['rank_est'] = np.sum(s > tol)
+        else:
+            # Random sketch approach
+            Omega = np.random.randn(n, sketch_size)
+
+            if hasattr(A, 'dot'):
+                Y = A.dot(Omega)
+            else:
+                Y = np.dot(A, Omega)
+
+            Q, R = np.linalg.qr(Y, mode='reduced')
+
+            if hasattr(A, 'dot'):
+                B = np.dot(Q.T, A)
+            else:
+                B = np.dot(Q.T, A)
+
+            s = np.linalg.svd(B, compute_uv=False)
+            tol = max(m, n) * np.finfo(float).eps * s[0]
+            diagnostics['rank_est'] = np.sum(s > tol)
+    except:
+        pass
 
 def gaussian_elimination_solver(np.ndarray[double, ndim=2, mode="c"] A,
                                 np.ndarray[double, ndim=1, mode="c"] b,

@@ -1602,7 +1602,7 @@ int minres(double *A, double *b, double *x, int n, solver_info *info) {
     double alpha = 0.0;    // Lanczos coefficient
     double gamma0 = 0.0, gamma1 = 0.0, gamma2 = 0.0; // Givens rotation parameters
     double sigma0 = 0.0, sigma1 = 0.0; // More Givens rotation parameters
-    double tau0 = 0.0, tau1 = 0.0, tau2 = 0.0; // Temporary values for solution update
+    double tau0 = 0.0, tau1 = 0.0; // Temporary values for solution update
     double residual_norm = 0.0; // Current residual norm
     double initial_residual_norm = 0.0; // Initial residual norm
     int iter = 0;
@@ -1745,7 +1745,6 @@ int minres(double *A, double *b, double *x, int n, solver_info *info) {
         }
 
         // Update the solution
-        tau2 = tau1;
         tau1 = tau0;
         tau0 = gamma0 * tau1;
 
