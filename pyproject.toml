@@ -38,7 +38,7 @@ Issues = "https://github.com/seregatipich/MatrixCore/issues"
 [project.optional-dependencies]
 test = ["pytest>=7", "pytest-cov", "hypothesis"]
 dev = ["ruff", "mypy", "pre-commit"]
-docs = ["sphinx", "furo"]
+docs = ["sphinx", "furo", "myst-parser"]
 
 [tool.setuptools]
 packages = ["matrixcore", "matrixcore.io"]

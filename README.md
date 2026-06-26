@@ -1,181 +1,167 @@
 # MatrixCore
 
-**MatrixCore** is a high-performance Python library for solving systems of linear equations using a fast C backend. Designed for speed and precision, MatrixCore gives you the power of native C solvers with the simplicity of a Pythonic interface.
+[![CI](https://github.com/seregatipich/MatrixCore/actions/workflows/ci.yml/badge.svg)](https://github.com/seregatipich/MatrixCore/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## 🚀 Features
+**MatrixCore** is a Python library for solving dense systems of linear equations
+`Ax = b`, backed by **30 solvers written from scratch in C**. The numerical core
+depends only on the C standard library (`libm`); NumPy and SciPy are used purely
+for the Python interface and matrix file I/O, never for the solve itself.
 
-- 🔧 Solve systems of linear equations `Ax = b`
-- ⚡ Powered by a C implementation for maximum speed
-- 🧠 Clean Python API via Cython
-- ✅ Supports dense square matrices (sparse support coming soon)
-- 📊 Supports multiple matrix file formats:
-  - MATLAB (.mat)
-  - Rutherford-Boeing (.rb)
-  - Matrix Market (.mtx)
-- 🔬 Accurate and efficient for educational and research use
+> **Positioning.** MatrixCore is an **educational / research** library: a clean,
+> readable, dependency-free implementation of classic linear-algebra algorithms
+> you can study and extend. It is *not* a replacement for the LAPACK-backed
+> routines in `scipy.linalg` / `numpy.linalg` — for production numerical work,
+> use those. MatrixCore is for learning how the algorithms actually work and for
+> prototyping solver variants.
 
-## 📦 Installation
+## Features
 
-To install the released version from PyPI:
+- Solve `Ax = b` for dense square matrices with 30 selectable algorithms
+- A pure-C backend (direct, iterative, and decomposition-based methods)
+- A clean Cython/NumPy interface with input coercion and typed exceptions
+- Automatic solver recommendation from matrix diagnostics
+- Read/write matrices in Matrix Market (`.mtx`), MATLAB (`.mat`), and
+  Rutherford-Boeing (`.rb`) formats
+- Typed (`py.typed` + stubs), linted (ruff), type-checked (mypy), and tested
+  (pytest + Hypothesis) against NumPy ground truth
+
+> Dense square systems only. Sparse solving is intentionally out of scope for
+> now; sparse inputs loaded from file are densified before solving.
+
+## Installation
+
+MatrixCore is not yet published to PyPI. Install from source (a C compiler is
+required to build the extension):
+
 ```bash
-  pip install matrixcore
+git clone https://github.com/seregatipich/MatrixCore.git
+cd MatrixCore
+python -m venv .venv && source .venv/bin/activate
+pip install -e .
 ```
 
-
-For development installation from source:
-```bash
-  git clone [https://github.com/seregatipich/matrixcore.git](https://github.com/seregatipich/matrixcore.git) cd matrixcore pip install -e .
-```
-
-## 🧮 How It Works
-
-MatrixCore uses a highly optimized C backend to perform linear algebra operations. The library implements 30 different algorithms for solving linear systems, giving you unprecedented flexibility to choose the right solver for your specific use case.
-
-The Cython layer provides a seamless interface between Python and the C code, ensuring both high performance and ease of use. Whether you're working with dense or sparse matrices, symmetric or non-symmetric systems, MatrixCore offers the right solver for your needs. See the Available Solvers section below for a complete list of implemented methods.
-
-## 🧩 Available Solvers
-
-MatrixCore offers a comprehensive suite of solvers for linear equation systems:
-
-- **Direct Methods**
-  - Gaussian Elimination (`'gaussian_elimination'`)
-  - Gauss-Jordan Elimination (`'gauss_jordan'`)
-  - Back Substitution (`'back_substitution'`)
-  - Forward Substitution (`'forward_substitution'`)
-  - LU Decomposition (`'lu_decomposition'`)
-  - Cholesky Decomposition (`'cholesky'`)
-  - QR Decomposition (`'qr_decomposition'`)
-  - Matrix Inversion Method (`'matrix_inversion'`)
-  - Cramer's Rule (`'cramers_rule'`)
-  - Row Reduction to Row-Echelon Form (`'row_echelon'`)
-  - Row Reduction to Reduced Row-Echelon Form (`'reduced_row_echelon'`)
-  - Triangularization (`'triangularization'`)
-
-- **Iterative Methods**
-  - Jacobi Iterative Method (`'jacobi'`)
-  - Gauss-Seidel Method (`'gauss_seidel'`)
-  - Successive Over-Relaxation (`'sor'`)
-  - Conjugate Gradient Method (`'conjugate_gradient'`)
-  - Gradient Descent Method (`'gradient_descent'`)
-  - Minimal Residual Method (`'minres'`)
-  - Generalized Minimal Residual Method (`'gmres'`)
-  - Biconjugate Gradient Method (`'bicg'`)
-  - Iterative Refinement (`'iterative_refinement'`)
-
-- **Specialized Methods**
-  - Normal Equations for Least Squares (`'normal_equations'`)
-  - Orthogonal Projection Method (`'orthogonal_projection'`)
-  - SVD (Singular Value Decomposition) (`'svd'`)
-  - Pseudoinverse Method (`'pseudoinverse'`)
-  - Block Matrix Method (`'block_matrix'`)
-  - Partitioning Method (`'partitioning'`)
-  - Matrix Rank Method (`'matrix_rank'`)
-  - Determinant Method (`'determinant'`)
-  - Matrix Eigenvalue Decomposition (`'eigenvalue_decomposition'`)
-
-## 📝 Usage Examples
-
-### Basic Solving
+## Quick start
 
 ```python
-import numpy as np from matrixcore import solve_system
+import numpy as np
+from matrixcore import solve_system
 
-# Create a system Ax = b
-A = np.array([[4, 2, 1], [2, 5, 3], [1, 3, 6]], dtype=np.float64)
-b = np.array([7, 10, 9], dtype=np.float64)
+A = np.array([[4.0, 2.0, 1.0], [2.0, 5.0, 3.0], [1.0, 3.0, 6.0]])
+b = np.array([7.0, 10.0, 9.0])
 
-# Solve the system
-x = solve_system(A, b)
-print(f"Solution: {x}")
+x = solve_system(A, b)                      # default: gaussian_elimination
+print(x)
+
+x = solve_system(A, b, method="cholesky")   # choose a specific method
+x, info = solve_system(A, b, method="conjugate_gradient", return_info=True)
+print(info)  # {'iterations': ..., 'residual': ..., 'error_code': 0}
 ```
 
+Inputs are coerced automatically: Python lists, integer arrays, Fortran-order
+arrays, and `scipy.sparse` matrices are all accepted and converted to a dense
+C-contiguous `float64` array.
 
-### Loading and Solving from Matrix Files
+## Choosing a solver
 
 ```python
-from matrixcore import load_matrix, solve_system
+from matrixcore import recommend_solver, list_available_solvers
 
-# Load matrix from MATLAB format
-A = load_matrix("matrix.mat", format="matlab", variable_name="A")
-b = load_matrix("matrix.mat", format="matlab", variable_name="b")
-
-# Load matrix from Rutherford-Boeing format
-A = load_matrix("matrix.rb", format="rb")
-
-# Load matrix from Matrix Market format
-A = load_matrix("matrix.mtx", format="mtx")
-b = load_matrix("vector.mtx", format="mtx")
-
-# Solve the system
-x = solve_system(A, b)
+recommend_solver(A)        # e.g. 'cholesky' for an SPD matrix
+list_available_solvers()   # all 30 method names
 ```
 
-
-### Saving Matrices to Different Formats
+## Matrix file I/O
 
 ```python
-from matrixcore import save_matrix
+from matrixcore import load_matrix, save_matrix, solve_system
 
-# Save matrix to MATLAB format
-save_matrix(A, "output.mat", format="matlab", variable_name="A")
+# Format is inferred from the extension, or set it explicitly with format=.
+save_matrix(A, "A.mtx")                       # Matrix Market
+A = load_matrix("A.mtx")
 
-# Save matrix to Rutherford-Boeing format
-save_matrix(A, "output.rb", format="rb")
+save_matrix(A, "system.mat", variable_name="A")   # MATLAB
+A = load_matrix("system.mat", variable_name="A")
 
-# Save matrix to Matrix Market format
-save_matrix(A, "output.mtx", format="mtx")
+save_matrix(A, "A.rb")                        # Rutherford-Boeing
+A = load_matrix("A.rb")
+
+x = solve_system(load_matrix("A.mtx"), load_matrix("b.mtx"))
 ```
 
-### Advanced Options
+## Error handling
+
+Failures raise precise exceptions from `matrixcore.exceptions`, all subclasses of
+`MatrixCoreError`:
 
 ```python
-from matrixcore import solve_system, list_available_solvers
+from matrixcore import solve_system, SingularMatrixError, NotSPDError
 
-# List all available solvers
-solvers = list_available_solvers()
-print(f"Available solvers: {solvers}")
-
-# Specify the algorithm to use
-x = solve_system(A, b, method='conjugate_gradient')
-
-# Try different solvers for performance comparison
-x_gauss = solve_system(A, b, method='gaussian_elimination')
-x_lu = solve_system(A, b, method='lu_decomposition')
-x_cholesky = solve_system(A, b, method='cholesky_decomposition')
-
-# Get additional information about the solution
-x, info = solve_system(A, b, method='gmres', return_info=True)
-print(f"Solution: {x}")
-print(f"Condition number: {info['condition_number']}")
-print(f"Iterations: {info['iterations']}")
-print(f"Convergence rate: {info['convergence_rate']}")
+try:
+    solve_system(singular_matrix, b)
+except SingularMatrixError:
+    ...
 ```
 
-## 📊 Project Structure
+| Exception | Raised when |
+|---|---|
+| `SingularMatrixError` | matrix is singular / numerically singular |
+| `NotSPDError` | matrix is not SPD for the chosen method (e.g. `cholesky`) |
+| `ConvergenceError` | an iterative method did not converge |
+| `InconsistentSystemError` | the system has no solution |
+| `MultipleSolutionsError` | the system has infinitely many solutions |
+| `InvalidParameterError` | invalid parameters or unknown method name |
+
+## Available solvers
+
+**Direct:** `gaussian_elimination`, `gauss_jordan`, `back_substitution`,
+`forward_substitution`, `lu_decomposition`, `cholesky`, `qr_decomposition`,
+`matrix_inversion`, `cramers_rule`, `row_echelon`, `reduced_row_echelon`,
+`triangularization`
+
+**Iterative:** `jacobi`, `gauss_seidel`, `sor`, `conjugate_gradient`,
+`gradient_descent`, `minres`, `gmres`, `bicg`, `iterative_refinement`
+
+**Specialized:** `normal_equations`, `orthogonal_projection`, `svd`,
+`pseudoinverse`, `block_matrix`, `partitioning`, `matrix_rank`, `determinant`,
+`eigenvalue_decomposition`
+
+Some methods require a particular matrix structure (`cholesky`,
+`conjugate_gradient`, `gradient_descent`, `minres`, and
+`eigenvalue_decomposition` require a symmetric positive-definite matrix;
+`back_substitution` / `forward_substitution` require a triangular matrix).
+
+## Project structure
 
 ```text
-matrixcore/
-├── matrixcore/           # Python wrapper
-│   ├── __init__.py       # Package initialization and API exports
-│   ├── solver.pyx        # Cython interface to C implementation
-│   ├── io/               # Matrix I/O functionality
-│   │   ├── __init__.py   
-│   │   ├── matlab.py     # MATLAB format support
-│   │   ├── rb.py         # Rutherford-Boeing format support
-│   │   └── mtx.py        # Matrix Market format support
-├── src/                  # C source code
-│   ├── solver.c          # C implementation of matrix solvers
-│   └── solver.h          # C header file with function declarations
-├── tests/                # Test suite
-│   ├── test_solver.py    # Test cases for solver functionality
-│   ├── test_io.py        # Test cases for matrix I/O functionality
-│   └── benchmark.py      # Performance benchmarks
-├── examples/             # Example usage scripts
-│   ├── basic_solving.py
-│   ├── matlab_format.py
-│   ├── rb_format.py
-│   └── mtx_format.py
-├── setup.py              # Build configuration
-├── pyproject.toml        # Python project metadata
-└── README.md             # Project documentation
+MatrixCore/
+├── matrixcore/
+│   ├── __init__.py        # Public API exports
+│   ├── solvers.pyx        # Cython interface to the C core
+│   ├── solvers.pyi        # Type stubs for the compiled module
+│   ├── exceptions.py      # Exception hierarchy + error-code mapping
+│   └── io/                # mtx / matlab / rb readers and writers
+├── src/
+│   ├── solvers.c          # 30 solvers, written from scratch in C
+│   └── solvers.h          # C API and error codes
+├── tests/                 # pytest + Hypothesis suite
+├── examples/              # runnable usage examples
+├── benchmarks/            # accuracy/speed comparison vs scipy
+├── setup.py               # Cython extension build
+└── pyproject.toml         # packaging + tool configuration
 ```
+
+## Development
+
+```bash
+pip install -e ".[test,dev]"
+pytest                     # run the test suite
+pytest --cov=matrixcore    # with coverage
+ruff check . && ruff format --check .
+mypy matrixcore
+```
+
+## License
+
+MIT — see [LICENSE](LICENSE).
