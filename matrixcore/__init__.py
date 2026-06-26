@@ -7,6 +7,7 @@ input handling and file I/O, never for the solve itself.
 
 from importlib.metadata import PackageNotFoundError, version
 
+from matrixcore.diagnostics import recommend_solver
 from matrixcore.exceptions import (
     ConvergenceError,
     InconsistentSystemError,
@@ -20,7 +21,6 @@ from matrixcore.exceptions import (
 from matrixcore.io import load_matrix, save_matrix
 from matrixcore.solvers import (
     list_available_solvers,
-    recommend_solver,
     solve_system,
 )
 

@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from matrixcore import list_available_solvers, recommend_solver
-from matrixcore.solvers import _matrix_diagnostics
+from matrixcore.diagnostics import _matrix_diagnostics
 from tests.conftest import general_matrix, spd_matrix
 
 
