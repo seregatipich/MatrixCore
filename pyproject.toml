@@ -64,6 +64,6 @@ source = ["matrixcore"]
 show_missing = true
 
 [tool.mypy]
-python_version = "3.9"
 warn_unused_ignores = true
 ignore_missing_imports = true
+exclude = ["build/"]

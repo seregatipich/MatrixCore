@@ -1,7 +1,10 @@
 import numpy as np
-
-from matrixcore.solvers import (_matrix_diagnostics, list_available_solvers,
-                                solve_system, recommend_solver)
+from matrixcore.solvers import (
+    _matrix_diagnostics,
+    list_available_solvers,
+    recommend_solver,
+    solve_system,
+)
 
 A = np.array([[4.0, 1.0], [1.0, 3.0]], dtype=np.float64)
 b = np.array([5.0, 4.0], dtype=np.float64)

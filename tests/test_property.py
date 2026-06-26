@@ -22,9 +22,19 @@ def _diagonally_dominant(seed, n):
 
 
 @SETTINGS
-@given(seed=st.integers(0, 5000), n=st.integers(2, 7), method=st.sampled_from(
-    ["gaussian_elimination", "lu_decomposition", "qr_decomposition", "cholesky", "conjugate_gradient"]
-))
+@given(
+    seed=st.integers(0, 5000),
+    n=st.integers(2, 7),
+    method=st.sampled_from(
+        [
+            "gaussian_elimination",
+            "lu_decomposition",
+            "qr_decomposition",
+            "cholesky",
+            "conjugate_gradient",
+        ]
+    ),
+)
 def test_spd_systems_solve_accurately(seed, n, method):
     A = _spd(seed, n)
     b = np.random.default_rng(seed + 1).uniform(-1.0, 1.0, size=n)
@@ -33,9 +43,19 @@ def test_spd_systems_solve_accurately(seed, n, method):
 
 
 @SETTINGS
-@given(seed=st.integers(0, 5000), n=st.integers(2, 7), method=st.sampled_from(
-    ["gaussian_elimination", "lu_decomposition", "qr_decomposition", "gauss_jordan", "matrix_inversion"]
-))
+@given(
+    seed=st.integers(0, 5000),
+    n=st.integers(2, 7),
+    method=st.sampled_from(
+        [
+            "gaussian_elimination",
+            "lu_decomposition",
+            "qr_decomposition",
+            "gauss_jordan",
+            "matrix_inversion",
+        ]
+    ),
+)
 def test_general_systems_solve_accurately(seed, n, method):
     A = _diagonally_dominant(seed, n)
     b = np.random.default_rng(seed + 7).uniform(-1.0, 1.0, size=n)
