@@ -89,3 +89,31 @@ def test_singular_via_dispatcher_sets_correct_exception():
     b = np.array([1.0, 2.0])
     with pytest.raises(SingularMatrixError):
         solve_system(A, b, method="lu_decomposition")
+
+
+@pytest.mark.parametrize("method", ["gmres", "svd", "pseudoinverse", "gaussian_elimination"])
+def test_inconsistent_singular_not_false_success(method):
+    """No exact solution exists; a solver must not report success with x=0."""
+    A = np.zeros((2, 2))
+    b = np.array([1.0, 0.0])
+    with pytest.raises(MatrixCoreError):
+        solve_system(A, b, method=method)
+
+
+def test_method_none_uses_default():
+    A = np.array([[4.0, 1.0], [1.0, 3.0]])
+    b = np.array([5.0, 4.0])
+    assert np.allclose(solve_system(A, b, method=None), [1.0, 1.0])
+
+
+def test_method_bytes_accepted():
+    A = np.array([[4.0, 1.0], [1.0, 3.0]])
+    b = np.array([5.0, 4.0])
+    assert np.allclose(solve_system(A, b, method=b"lu_decomposition"), [1.0, 1.0])
+
+
+def test_method_wrong_type_raises():
+    A = np.array([[4.0, 1.0], [1.0, 3.0]])
+    b = np.array([5.0, 4.0])
+    with pytest.raises(InvalidParameterError):
+        solve_system(A, b, method=123)

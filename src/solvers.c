@@ -3376,75 +3376,109 @@ cleanup:
 /* Main solver function that dispatches to the appropriate method */
 int solve_linear_system(double *A, double *b, double *x, int n,
                         const char *method, solver_info *info) {
+    // Validate inputs so C-level callers cannot trigger out-of-bounds access.
+    if (!A || !b || !x || n <= 0) {
+        set_info(info, 0, NAN, SOLVER_INPUT_ERROR);
+        return SOLVER_INPUT_ERROR;
+    }
+
+    // Initialize info to a known state so that even a solver that returns early
+    // without touching it leaves consistent diagnostics for the caller.
+    set_info(info, 0, NAN, SOLVER_SUCCESS);
+
     // Default to Gaussian Elimination if no method specified
     if (!method || strlen(method) == 0) {
         method = "gaussian_elimination";
     }
 
+    int result;
+
     // Dispatch to the appropriate solver method
     if (strcmp(method, "gaussian_elimination") == 0) {
-        return gaussian_elimination(A, b, x, n, info);
+        result = gaussian_elimination(A, b, x, n, info);
     } else if (strcmp(method, "gauss_jordan") == 0) {
-        return gauss_jordan(A, b, x, n, info);
+        result = gauss_jordan(A, b, x, n, info);
     } else if (strcmp(method, "back_substitution") == 0) {
-        return back_substitution(A, b, x, n, info);
+        result = back_substitution(A, b, x, n, info);
     } else if (strcmp(method, "forward_substitution") == 0) {
-        return forward_substitution(A, b, x, n, info);
+        result = forward_substitution(A, b, x, n, info);
     } else if (strcmp(method, "lu_decomposition") == 0) {
-        return lu_decomposition(A, b, x, n, info);
+        result = lu_decomposition(A, b, x, n, info);
     } else if (strcmp(method, "cholesky") == 0) {
-        return cholesky(A, b, x, n, info);
+        result = cholesky(A, b, x, n, info);
     } else if (strcmp(method, "qr_decomposition") == 0) {
-        return qr_decomposition(A, b, x, n, info);
+        result = qr_decomposition(A, b, x, n, info);
     } else if (strcmp(method, "matrix_inversion") == 0) {
-        return matrix_inversion(A, b, x, n, info);
+        result = matrix_inversion(A, b, x, n, info);
     } else if (strcmp(method, "cramers_rule") == 0) {
-        return cramers_rule(A, b, x, n, info);
+        result = cramers_rule(A, b, x, n, info);
     } else if (strcmp(method, "row_echelon") == 0) {
-        return row_echelon(A, b, x, n, info);
+        result = row_echelon(A, b, x, n, info);
     } else if (strcmp(method, "reduced_row_echelon") == 0) {
-        return reduced_row_echelon(A, b, x, n, info);
+        result = reduced_row_echelon(A, b, x, n, info);
     } else if (strcmp(method, "triangularization") == 0) {
-        return triangularization(A, b, x, n, info);
+        result = triangularization(A, b, x, n, info);
     } else if (strcmp(method, "jacobi") == 0) {
-        return jacobi(A, b, x, n, info);
+        result = jacobi(A, b, x, n, info);
     } else if (strcmp(method, "gauss_seidel") == 0) {
-        return gauss_seidel(A, b, x, n, info);
+        result = gauss_seidel(A, b, x, n, info);
     } else if (strcmp(method, "sor") == 0) {
-        return sor(A, b, x, n, info);
+        result = sor(A, b, x, n, info);
     } else if (strcmp(method, "conjugate_gradient") == 0) {
-        return conjugate_gradient(A, b, x, n, info);
+        result = conjugate_gradient(A, b, x, n, info);
     } else if (strcmp(method, "gradient_descent") == 0) {
-        return gradient_descent(A, b, x, n, info);
+        result = gradient_descent(A, b, x, n, info);
     } else if (strcmp(method, "minres") == 0) {
-        return minres(A, b, x, n, info);
+        result = minres(A, b, x, n, info);
     } else if (strcmp(method, "gmres") == 0) {
-        return gmres(A, b, x, n, info);
+        result = gmres(A, b, x, n, info);
     } else if (strcmp(method, "bicg") == 0) {
-        return bicg(A, b, x, n, info);
+        result = bicg(A, b, x, n, info);
     } else if (strcmp(method, "iterative_refinement") == 0) {
-        return iterative_refinement(A, b, x, n, info);
+        result = iterative_refinement(A, b, x, n, info);
     } else if (strcmp(method, "normal_equations") == 0) {
-        return normal_equations(A, b, x, n, info);
+        result = normal_equations(A, b, x, n, info);
     } else if (strcmp(method, "orthogonal_projection") == 0) {
-        return orthogonal_projection(A, b, x, n, info);
+        result = orthogonal_projection(A, b, x, n, info);
     } else if (strcmp(method, "svd") == 0) {
-        return svd(A, b, x, n, info);
+        result = svd(A, b, x, n, info);
     } else if (strcmp(method, "pseudoinverse") == 0) {
-        return pseudoinverse(A, b, x, n, info);
+        result = pseudoinverse(A, b, x, n, info);
     } else if (strcmp(method, "block_matrix") == 0) {
-        return block_matrix(A, b, x, n, info);
+        result = block_matrix(A, b, x, n, info);
     } else if (strcmp(method, "partitioning") == 0) {
-        return partitioning(A, b, x, n, info);
+        result = partitioning(A, b, x, n, info);
     } else if (strcmp(method, "matrix_rank") == 0) {
-        return matrix_rank(A, b, x, n, info);
+        result = matrix_rank(A, b, x, n, info);
     } else if (strcmp(method, "determinant") == 0) {
-        return determinant(A, b, x, n, info);
+        result = determinant(A, b, x, n, info);
     } else if (strcmp(method, "eigenvalue_decomposition") == 0) {
-        return eigenvalue_decomposition(A, b, x, n, info);
+        result = eigenvalue_decomposition(A, b, x, n, info);
+    } else {
+        // Method not recognized
+        set_info(info, 0, NAN, SOLVER_INPUT_ERROR);
+        return SOLVER_INPUT_ERROR;
     }
 
-    // If method is not recognized, return an error code
-    set_info(info, 0, NAN, SOLVER_INPUT_ERROR);
-    return SOLVER_INPUT_ERROR;
+    // Success invariant: a reported success must actually solve A x = b. Guards
+    // against methods (e.g. gmres/svd/pseudoinverse) reporting success with a
+    // stale residual on inconsistent or singular systems.
+    if (result == SOLVER_SUCCESS) {
+        double bnorm = 0.0;
+        for (int i = 0; i < n; i++) {
+            bnorm += b[i] * b[i];
+        }
+        bnorm = sqrt(bnorm);
+        double res = residual_norm(A, b, x, n);
+        if (res > 1e-6 * (bnorm + 1.0)) {
+            set_info(info, info ? info->iterations : 0, res, SOLVER_SINGULAR_MATRIX);
+            return SOLVER_SINGULAR_MATRIX;
+        }
+    }
+
+    // Guarantee info->error_code matches the returned value for C-level callers.
+    if (info) {
+        info->error_code = result;
+    }
+    return result;
 }

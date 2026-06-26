@@ -104,6 +104,13 @@ def solve_system(A, b, method='gaussian_elimination', return_info=False):
     if not np.isfinite(A_c).all() or not np.isfinite(b_c).all():
         raise InvalidParameterError("inputs must contain only finite values (no NaN or inf)")
 
+    if method is None:
+        method = 'gaussian_elimination'
+    elif isinstance(method, bytes):
+        method = method.decode('utf-8')
+    elif not isinstance(method, str):
+        raise InvalidParameterError(f"method must be a string, got {type(method).__name__}")
+
     cdef int n = A_c.shape[0]
     cdef np.ndarray[double, ndim=1, mode="c"] x = np.zeros(n, dtype=np.float64)
     cdef solver_info info
