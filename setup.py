@@ -1,21 +1,25 @@
-import numpy as np
-from Cython.Build import cythonize
-from setuptools import Extension, find_packages, setup
+import sys
 
-# Define the extension module
+from Cython.Build import cythonize
+from setuptools import Extension, setup
+
+
+def numpy_include():
+    import numpy
+
+    return numpy.get_include()
+
+
+math_libraries = [] if sys.platform == "win32" else ["m"]
+
 extensions = [
     Extension(
-        "matrixcore.solvers",  # This must match your module path
-        ["matrixcore/solvers.pyx", "src/solvers.c"],  # Include both Cython and C source
-        include_dirs=[np.get_include(), "src"],  # Include NumPy headers and your src directory
-        libraries=["m"],  # Link to the math library
-        language="c"  # Specify the language
+        "matrixcore.solvers",
+        ["matrixcore/solvers.pyx", "src/solvers.c"],
+        include_dirs=[numpy_include(), "src"],
+        libraries=math_libraries,
+        language="c",
     )
 ]
 
-setup(
-    name="MatrixCore",
-    version="0.1",
-    packages=find_packages(),
-    ext_modules=cythonize(extensions, language_level=3),
-)
+setup(ext_modules=cythonize(extensions, language_level=3))
