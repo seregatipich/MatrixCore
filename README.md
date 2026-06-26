@@ -1,7 +1,7 @@
 # MatrixCore
 
 [![CI](https://github.com/seregatipich/MatrixCore/actions/workflows/ci.yml/badge.svg)](https://github.com/seregatipich/MatrixCore/actions/workflows/ci.yml)
-[![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 **MatrixCore** is a Python library for solving dense systems of linear equations
