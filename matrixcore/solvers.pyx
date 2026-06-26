@@ -6,9 +6,7 @@ import numpy as np
 
 cimport numpy as np
 
-import logging
-
-from libc.math cimport fabs, isinf, isnan
+from matrixcore.exceptions import error_for_code
 
 np.import_array()
 
@@ -55,72 +53,70 @@ cdef extern from "solvers.h":
     # Import the main solver function
     int solve_linear_system(double *A, double *b, double *x, int n, const char *method, solver_info *info)
 
-def solve_system(np.ndarray[double, ndim=2, mode="c"] A,
-                 np.ndarray[double, ndim=1, mode="c"] b,
-                 method='gaussian_elimination',
-                 return_info=False):
+def _as_dense_f64(array, name):
+    """Coerce input to a contiguous float64 numpy array, densifying sparse input."""
+    if hasattr(array, "toarray"):  # scipy.sparse matrix
+        array = array.toarray()
+    return np.ascontiguousarray(array, dtype=np.float64)
+
+
+def solve_system(A, b, method='gaussian_elimination', return_info=False):
     """
     Solve a linear system Ax = b using the specified method.
 
     Parameters
     ----------
-    A : numpy.ndarray
-        Coefficient matrix (n x n)
-    b : : numpy.ndarray
-        Right-hand side vector (n)
+    A : array_like
+        Coefficient matrix (n x n). Non-contiguous, non-float64, or scipy.sparse
+        inputs are converted to a dense C-contiguous float64 array.
+    b : array_like
+        Right-hand side vector (n).
     method : str, optional
-        Solver method to use, default is 'gaussian_elimination'
+        Solver method to use, default is 'gaussian_elimination'. See
+        :func:`list_available_solvers` for the full list.
     return_info : bool, optional
-        Whether to return solver information, default is False
+        Whether to return solver information, default is False.
 
     Returns
     -------
     numpy.ndarray or tuple
         Solution vector x if return_info=False, otherwise a tuple (x, info_dict)
-        where info_dict contains solver information
+        where info_dict contains 'iterations', 'residual' and 'error_code'.
+
+    Raises
+    ------
+    SingularMatrixError, NotSPDError, ConvergenceError, InvalidParameterError
+        Subclasses of :class:`matrixcore.exceptions.MatrixCoreError` describing
+        the precise failure reported by the C core.
     """
-    # Check input dimensions
-    if A.shape[0] != A.shape[1]:
-        raise ValueError("Matrix A must be square")
-    if A.shape[0] != b.shape[0]:
-        raise ValueError(f"Dimension mismatch: A is {A.shape[0]}x{A.shape[1]} but b has length {b.shape[0]}")
+    cdef np.ndarray[double, ndim=2, mode="c"] A_c = _as_dense_f64(A, "A")
+    cdef np.ndarray[double, ndim=1, mode="c"] b_c = _as_dense_f64(b, "b")
 
-    # Get problem size
-    cdef int n = A.shape[0]
+    if A_c.shape[0] != A_c.shape[1]:
+        raise ValueError(f"Matrix A must be square, got shape {A_c.shape[0]}x{A_c.shape[1]}")
+    if A_c.shape[0] != b_c.shape[0]:
+        raise ValueError(
+            f"Dimension mismatch: A is {A_c.shape[0]}x{A_c.shape[1]} but b has length {b_c.shape[0]}"
+        )
 
-    # Create output array for the solution
+    cdef int n = A_c.shape[0]
     cdef np.ndarray[double, ndim=1, mode="c"] x = np.zeros(n, dtype=np.float64)
-
-    # Create solver_info struct to collect information
     cdef solver_info info
-
-    # Convert method string to bytes
     cdef bytes method_bytes = method.encode('utf-8')
 
-    # Call the C solver function
-    cdef int result = solve_linear_system(&A[0, 0], &b[0], &x[0], n, method_bytes, &info)
+    cdef int result = solve_linear_system(&A_c[0, 0], &b_c[0], &x[0], n, method_bytes, &info)
 
-    # Check for errors
     if result != 0:
-        if info.error_code == 1:
-            raise ValueError("Matrix is singular or nearly singular")
-        elif info.error_code == 2:
-            raise ValueError("Method not implemented or not applicable")
-        elif info.error_code == 3:
-            raise ValueError("Iterative method failed to converge")
-        else:
-            raise RuntimeError(f"Solver failed with error code {info.error_code}")
+        raise error_for_code(info.error_code, method=method)
 
-    # Return result based on return_info flag
     if return_info:
         info_dict = {
             'iterations': info.iterations,
             'residual': info.residual,
-            'error_code': info.error_code
+            'error_code': info.error_code,
         }
         return x, info_dict
-    else:
-        return x
+    return x
 
 def recommend_solver(A):
     """
