@@ -121,3 +121,27 @@ def test_iterative_method_reports_iterations():
 
 def test_convergence_error_is_runtimeerror_subclass():
     assert issubclass(ConvergenceError, RuntimeError)
+
+
+@pytest.mark.parametrize("n", [3, 4, 5, 6, 8, 10])
+@pytest.mark.parametrize("seed", [0, 1, 2, 5, 11])
+def test_gmres_converges_on_well_conditioned(n, seed):
+    """GMRES must converge on well-conditioned general and SPD systems."""
+    from tests.conftest import general_matrix, spd_matrix
+
+    rng = np.random.default_rng(seed)
+    for A in (general_matrix(n, seed=seed * 7 + n), spd_matrix(n)):
+        b = rng.uniform(-1.0, 1.0, size=n)
+        x = solve_system(A, b, method="gmres")
+        assert np.linalg.norm(A @ x - b) / np.linalg.norm(b) < 1e-6
+
+
+@pytest.mark.parametrize("n", [12, 20, 30])
+def test_cramers_rule_handles_larger_n(n):
+    """Cramer's rule (GE-determinant based) is not artificially capped at n=10."""
+    from tests.conftest import spd_matrix
+
+    A = spd_matrix(n)
+    b = np.arange(1.0, n + 1.0)
+    x = solve_system(A, b, method="cramers_rule")
+    assert np.allclose(x, np.linalg.solve(A, b))

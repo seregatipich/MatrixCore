@@ -788,12 +788,6 @@ int cramers_rule(double *A, double *b, double *x, int n, solver_info *info) {
     double *modified_matrix = NULL;
     double det_A = 0.0;
 
-    // For large matrices, Cramer's rule is inefficient
-    if (n > 10) {
-        set_info(info, 0, NAN, SOLVER_INVALID_PARAMETERS);
-        return SOLVER_INVALID_PARAMETERS;
-    }
-
     modified_matrix = (double*)malloc(n * n * sizeof(double));
     if (!modified_matrix) {
         result = SOLVER_MEMORY_ERROR;
@@ -1739,264 +1733,192 @@ cleanup:
  * products only, making it suitable for large sparse systems.
  */
 int gmres(double *A, double *b, double *x, int n, solver_info *info) {
-    double *r = NULL;          // Residual vector
-    double *v = NULL;          // Current basis vector
-    double **V = NULL;         // Arnoldi basis vectors
-    double **H = NULL;         // Hessenberg matrix
-    double *cs = NULL;         // Givens rotation cosines
-    double *sn = NULL;         // Givens rotation sines
-    double *y = NULL;          // Solution of the least squares problem
-    double *g = NULL;          // Right-hand side of the least-squares problem
-    double *temp = NULL;       // Temporary vector for matrix-vector product
+    const int m = n;           // Restart parameter: full GMRES for small dense systems
 
-    double beta = 0.0;         // Initial residual norm
-    double residual_norm = 0.0;// Current residual norm
-    double initial_residual_norm = 0.0; // Initial residual norm
-    int iter = 0;
+    double *r = NULL;          // Residual vector b - A x
+    double *w = NULL;          // Arnoldi work vector A V[j]
+    double *V = NULL;          // Krylov basis, (m+1) vectors of length n, row-major
+    double *H = NULL;          // Hessenberg factor, (m+1) rows by m columns, row-major
+    double *cs = NULL;         // Givens cosines
+    double *sn = NULL;         // Givens sines
+    double *g = NULL;          // Rotated right-hand side of the least-squares problem
+    double *y = NULL;          // Least-squares solution coefficients
+
     int total_iter = 0;
     int result = SOLVER_SUCCESS;
-    int i, j;                  // Loop counters
+    int converged = 0;
 
-    // GMRES restart parameter - could be made configurable
-    int restart = n;
+    r  = (double*)malloc((size_t)n * sizeof(double));
+    w  = (double*)malloc((size_t)n * sizeof(double));
+    V  = (double*)malloc((size_t)(m + 1) * (size_t)n * sizeof(double));
+    H  = (double*)calloc((size_t)(m + 1) * (size_t)m, sizeof(double));
+    cs = (double*)malloc((size_t)m * sizeof(double));
+    sn = (double*)malloc((size_t)m * sizeof(double));
+    g  = (double*)malloc((size_t)(m + 1) * sizeof(double));
+    y  = (double*)malloc((size_t)m * sizeof(double));
 
-    // Allocate memory for vectors
-    r = (double*)malloc(n * sizeof(double));
-    v = (double*)malloc(n * sizeof(double));
-    temp = (double*)malloc(n * sizeof(double));
-    y = (double*)malloc((restart+1) * sizeof(double));
-    g = (double*)malloc((restart+1) * sizeof(double));
-    cs = (double*)malloc(restart * sizeof(double));
-    sn = (double*)malloc(restart * sizeof(double));
-
-    // Check if memory allocation was successful
-    if (!r || !v || !temp || !y || !g || !cs || !sn) {
+    if (!r || !w || !V || !H || !cs || !sn || !g || !y) {
         result = SOLVER_MEMORY_ERROR;
         goto cleanup;
     }
 
-    // Allocate memory for Arnoldi basis vectors
-    V = (double**)malloc((restart+1) * sizeof(double*));
-    if (!V) {
-        result = SOLVER_MEMORY_ERROR;
-        goto cleanup;
-    }
-
-    // Initialize all pointers to NULL for safer cleanup
-    for (i = 0; i <= restart; i++) {
-        V[i] = NULL;
-    }
-
-    // Allocate memory for each basis vector
-    for (i = 0; i <= restart; i++) {
-        V[i] = (double*)malloc(n * sizeof(double));
-        if (!V[i]) {
-            result = SOLVER_MEMORY_ERROR;
-            goto cleanup;
-        }
-    }
-
-    // Allocate memory for Hessenberg matrix
-    H = (double**)malloc((restart+1) * sizeof(double*));
-    if (!H) {
-        result = SOLVER_MEMORY_ERROR;
-        goto cleanup;
-    }
-
-    // Initialize all pointers to NULL for safer cleanup
-    for (i = 0; i <= restart; i++) {
-        H[i] = NULL;
-    }
-
-    // Allocate memory for each row of H
-    for (i = 0; i <= restart; i++) {
-        H[i] = (double*)calloc(restart, sizeof(double));
-        if (!H[i]) {
-            result = SOLVER_MEMORY_ERROR;
-            goto cleanup;
-        }
-    }
-
-    // Initialize solution vector x to zeros if not provided
-    for (i = 0; i < n; i++) {
+    for (int i = 0; i < n; i++) {
         x[i] = 0.0;
     }
 
-    // Main GMRES loop (with restarts)
-    while (total_iter < MAX_ITERATIONS) {
-        // Compute initial residual r = b - A*x
-        for (i = 0; i < n; i++) {
-            temp[i] = 0.0;
-            for (j = 0; j < n; j++) {
-                temp[i] += A[i * n + j] * x[j];
+    double b_norm = 0.0;
+    for (int i = 0; i < n; i++) {
+        b_norm += b[i] * b[i];
+    }
+    b_norm = sqrt(b_norm);
+
+    double beta_initial = 0.0;
+
+    while (total_iter < MAX_ITERATIONS && !converged) {
+        int cycle_start = total_iter;
+
+        for (int i = 0; i < n; i++) {
+            double row = b[i];
+            for (int k = 0; k < n; k++) {
+                row -= A[i * n + k] * x[k];
             }
-            r[i] = b[i] - temp[i];
+            r[i] = row;
         }
 
-        // Calculate initial residual norm
-        beta = 0.0;
-        for (i = 0; i < n; i++) {
+        double beta = 0.0;
+        for (int i = 0; i < n; i++) {
             beta += r[i] * r[i];
         }
         beta = sqrt(beta);
 
-        // Remember initial residual norm on the first iteration
         if (total_iter == 0) {
-            initial_residual_norm = beta;
-
-            if (initial_residual_norm < TOLERANCE) {
-                // b is already close to zero, solution is x = 0
-                residual_norm = initial_residual_norm;
-                iter = 0;
-                goto reporting;
-            }
+            beta_initial = beta;
         }
 
-        // Initialize the first basis vector
-        for (i = 0; i < n; i++) {
-            V[0][i] = r[i] / beta;
+        if (beta < TOLERANCE) {
+            converged = 1;
+            break;
         }
 
-        // Initialize right-hand side of the least-squares problem
-        for (i = 0; i <= restart; i++) {
+        for (int i = 0; i < n; i++) {
+            V[i] = r[i] / beta;
+        }
+        for (int i = 0; i <= m; i++) {
             g[i] = 0.0;
         }
         g[0] = beta;
 
-        // Arnoldi iteration
-        for (iter = 0; iter < restart && total_iter < MAX_ITERATIONS; iter++, total_iter++) {
-            // Compute v = A * V[iter]
-            for (i = 0; i < n; i++) {
-                v[i] = 0.0;
-                for (j = 0; j < n; j++) {
-                    v[i] += A[i * n + j] * V[iter][j];
+        int columns_done = 0;
+        for (int j = 0; j < m && total_iter < MAX_ITERATIONS; j++) {
+            total_iter++;
+
+            for (int i = 0; i < n; i++) {
+                double row = 0.0;
+                for (int k = 0; k < n; k++) {
+                    row += A[i * n + k] * V[(size_t)j * n + k];
+                }
+                w[i] = row;
+            }
+
+            for (int i = 0; i <= j; i++) {
+                double hij = 0.0;
+                for (int k = 0; k < n; k++) {
+                    hij += w[k] * V[(size_t)i * n + k];
+                }
+                H[(size_t)i * m + j] = hij;
+                for (int k = 0; k < n; k++) {
+                    w[k] -= hij * V[(size_t)i * n + k];
                 }
             }
 
-            // Modified Gram-Schmidt orthogonalization
-            for (j = 0; j <= iter; j++) {
-                H[j][iter] = 0.0;
-                for (i = 0; i < n; i++) {
-                    H[j][iter] += v[i] * V[j][i];
+            double w_norm = 0.0;
+            for (int i = 0; i < n; i++) {
+                w_norm += w[i] * w[i];
+            }
+            w_norm = sqrt(w_norm);
+            H[(size_t)(j + 1) * m + j] = w_norm;
+
+            int breakdown = (w_norm <= TOLERANCE);
+            if (!breakdown) {
+                for (int i = 0; i < n; i++) {
+                    V[(size_t)(j + 1) * n + i] = w[i] / w_norm;
                 }
-                for (i = 0; i < n; i++) {
-                    v[i] -= H[j][iter] * V[j][i];
-                }
             }
 
-            // Compute the (iter+1,iter) element of H
-            H[iter+1][iter] = 0.0;
-            for (i = 0; i < n; i++) {
-                H[iter+1][iter] += v[i] * v[i];
-            }
-            H[iter+1][iter] = sqrt(H[iter+1][iter]);
-
-            // Check for breakdown (orthogonalization breakdown)
-            if (fabs(H[iter+1][iter]) < TOLERANCE) {
-                iter++;  // Include this iteration
-                break;
+            for (int i = 0; i < j; i++) {
+                double upper = H[(size_t)i * m + j];
+                double lower = H[(size_t)(i + 1) * m + j];
+                H[(size_t)i * m + j]       = cs[i] * upper + sn[i] * lower;
+                H[(size_t)(i + 1) * m + j] = -sn[i] * upper + cs[i] * lower;
             }
 
-            // Create the next basis vector
-            for (i = 0; i < n; i++) {
-                V[iter+1][i] = v[i] / H[iter+1][iter];
-            }
-
-            // Apply previous Givens rotations to the current column of H
-            for (j = 0; j < iter; j++) {
-                double temp = cs[j] * H[j][iter] + sn[j] * H[j+1][iter];
-                H[j+1][iter] = -sn[j] * H[j][iter] + cs[j] * H[j+1][iter];
-                H[j][iter] = temp;
-            }
-
-            // Compute and apply the current Givens rotation
-            if (fabs(H[iter+1][iter]) > TOLERANCE) {
-                double t = sqrt(H[iter][iter] * H[iter][iter] + H[iter+1][iter] * H[iter+1][iter]);
-                cs[iter] = H[iter][iter] / t;
-                sn[iter] = H[iter+1][iter] / t;
-
-                // Apply Givens rotation to the Hessenberg matrix
-                H[iter][iter] = t;
-                H[iter+1][iter] = 0.0;
-
-                // Apply Givens rotation to the right-hand side
-                double temp = cs[iter] * g[iter] + sn[iter] * g[iter+1];
-                g[iter+1] = -sn[iter] * g[iter] + cs[iter] * g[iter+1];
-                g[iter] = temp;
-            }
-
-            // Calculate residual norm as |g[iter+1]|
-            residual_norm = fabs(g[iter+1]);
-
-            // Check for convergence
-            if (residual_norm / initial_residual_norm < TOLERANCE) {
-                break;
-            }
-        }
-
-        // Solve the upper triangular system H(0:iter-1,0:iter-1) * y = g(0:iter-1)
-        for (i = iter - 1; i >= 0; i--) {
-            y[i] = g[i];
-            for (j = i + 1; j < iter; j++) {
-                y[i] -= H[i][j] * y[j];
-            }
-            if (fabs(H[i][i]) < TOLERANCE) {
-                y[i] = 0.0;
+            double diag = H[(size_t)j * m + j];
+            double sub  = H[(size_t)(j + 1) * m + j];
+            double denom = sqrt(diag * diag + sub * sub);
+            if (denom <= 0.0) {
+                cs[j] = 1.0;
+                sn[j] = 0.0;
             } else {
-                y[i] /= H[i][i];
+                cs[j] = diag / denom;
+                sn[j] = sub / denom;
+            }
+            H[(size_t)j * m + j] = cs[j] * diag + sn[j] * sub;
+            H[(size_t)(j + 1) * m + j] = 0.0;
+
+            double g_top = g[j];
+            double g_bottom = g[j + 1];
+            g[j]     = cs[j] * g_top + sn[j] * g_bottom;
+            g[j + 1] = -sn[j] * g_top + cs[j] * g_bottom;
+
+            columns_done = j + 1;
+            double rho = fabs(g[j + 1]);
+
+            if (breakdown || rho < TOLERANCE * (beta + 1.0)) {
+                break;
             }
         }
 
-        // Update the solution x = x + V * y
-        for (i = 0; i < n; i++) {
-            for (j = 0; j < iter; j++) {
-                x[i] += V[j][i] * y[j];
+        for (int i = columns_done - 1; i >= 0; i--) {
+            double sum = g[i];
+            for (int k = i + 1; k < columns_done; k++) {
+                sum -= H[(size_t)i * m + k] * y[k];
             }
+            double pivot = H[(size_t)i * m + i];
+            y[i] = (fabs(pivot) < TOLERANCE) ? 0.0 : sum / pivot;
         }
 
-        // Check for convergence
-        if (residual_norm / initial_residual_norm < TOLERANCE) {
+        for (int i = 0; i < n; i++) {
+            double update = 0.0;
+            for (int k = 0; k < columns_done; k++) {
+                update += V[(size_t)k * n + i] * y[k];
+            }
+            x[i] += update;
+        }
+
+        double true_resid = residual_norm(A, b, x, n);
+        if (true_resid < TOLERANCE * (beta_initial + 1.0) || true_resid < 1e-9 * (b_norm + 1.0)) {
+            converged = 1;
             break;
         }
 
-        // If we've reached the maximum number of iterations, exit
-        if (total_iter >= MAX_ITERATIONS) {
+        if (total_iter == cycle_start) {
             break;
         }
     }
 
-reporting:
-    if (total_iter >= MAX_ITERATIONS &&
-        residual_norm / initial_residual_norm >= TOLERANCE) {
-        result = SOLVER_NO_CONVERGENCE;
-    }
+    result = converged ? SOLVER_SUCCESS : SOLVER_NOT_CONVERGED;
 
 cleanup:
-    // Free allocated memory - check each pointer before freeing
     free(r);
-    free(v);
-    free(temp);
-    free(y);
-    free(g);
+    free(w);
+    free(V);
+    free(H);
     free(cs);
     free(sn);
+    free(g);
+    free(y);
 
-    // Free the 2D arrays
-    if (V) {
-        for (i = 0; i <= restart; i++) {
-            free(V[i]);  // free(NULL) is safe in standard C
-        }
-        free(V);
-    }
-
-    if (H) {
-        for (i = 0; i <= restart; i++) {
-            free(H[i]);  // free(NULL) is safe in standard C
-        }
-        free(H);
-    }
-
-    set_info(info, total_iter, result == SOLVER_SUCCESS ? residual_norm : NAN, result);
+    set_info(info, total_iter, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
     return result;
 }
 
