@@ -90,7 +90,8 @@ def solve_system(A, b, method='gaussian_elimination', return_info=False):
         the precise failure reported by the C core.
     """
     cdef np.ndarray[double, ndim=2, mode="c"] A_c = _as_dense_f64(A, "A")
-    cdef np.ndarray[double, ndim=1, mode="c"] b_c = _as_dense_f64(b, "b")
+    b_dense = np.atleast_1d(np.squeeze(_as_dense_f64(b, "b")))
+    cdef np.ndarray[double, ndim=1, mode="c"] b_c = np.ascontiguousarray(b_dense, dtype=np.float64)
 
     if A_c.shape[0] != A_c.shape[1]:
         raise ValueError(f"Matrix A must be square, got shape {A_c.shape[0]}x{A_c.shape[1]}")

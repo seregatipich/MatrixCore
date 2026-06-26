@@ -17,6 +17,7 @@ from matrixcore.exceptions import (
     SingularMatrixError,
     SolverMemoryError,
 )
+from matrixcore.io import load_matrix, save_matrix
 from matrixcore.solvers import (
     list_available_solvers,
     recommend_solver,
@@ -32,6 +33,8 @@ __all__ = [
     "solve_system",
     "recommend_solver",
     "list_available_solvers",
+    "load_matrix",
+    "save_matrix",
     "MatrixCoreError",
     "SingularMatrixError",
     "NotSPDError",
