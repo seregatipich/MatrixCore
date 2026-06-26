@@ -14,6 +14,159 @@
 #define MAX_ITERATIONS 1000
 #define TOLERANCE 1e-10
 
+/* Populate an optional solver_info, ignoring a NULL pointer. */
+static void set_info(solver_info *info, int iterations, double residual, int error_code) {
+    if (info) {
+        info->iterations = iterations;
+        info->residual = residual;
+        info->error_code = error_code;
+    }
+}
+
+/* 2-norm of the residual ||A x - b|| for an n x n system, using the original A and b. */
+static double residual_norm(const double *A, const double *b, const double *x, int n) {
+    double sum_sq = 0.0;
+    for (int i = 0; i < n; i++) {
+        double row = -b[i];
+        for (int j = 0; j < n; j++) {
+            row += A[i * n + j] * x[j];
+        }
+        sum_sq += row * row;
+    }
+    return sqrt(sum_sq);
+}
+
+/* Determinant of an n x n matrix via Gaussian elimination with partial pivoting.
+   Works on an internal copy, leaving the caller's matrix untouched. Returns 0 on
+   allocation failure (caller treats a zero determinant as singular). */
+static double matrix_determinant(const double *M, int n) {
+    double *work = (double*)malloc(n * n * sizeof(double));
+    if (!work) {
+        return 0.0;
+    }
+    memcpy(work, M, n * n * sizeof(double));
+
+    double det = 1.0;
+    for (int k = 0; k < n; k++) {
+        int pivot_row = k;
+        double pivot_value = fabs(work[k * n + k]);
+        for (int i = k + 1; i < n; i++) {
+            double candidate = fabs(work[i * n + k]);
+            if (candidate > pivot_value) {
+                pivot_value = candidate;
+                pivot_row = i;
+            }
+        }
+
+        if (pivot_value < TOLERANCE) {
+            free(work);
+            return 0.0;
+        }
+
+        if (pivot_row != k) {
+            for (int j = 0; j < n; j++) {
+                double temp = work[k * n + j];
+                work[k * n + j] = work[pivot_row * n + j];
+                work[pivot_row * n + j] = temp;
+            }
+            det = -det;
+        }
+
+        det *= work[k * n + k];
+        for (int i = k + 1; i < n; i++) {
+            double factor = work[i * n + k] / work[k * n + k];
+            for (int j = k + 1; j < n; j++) {
+                work[i * n + j] -= factor * work[k * n + j];
+            }
+        }
+    }
+
+    free(work);
+    return det;
+}
+
+/* One-sided Jacobi SVD of a square matrix A (n x n).
+   On success U_scaled holds the (unnormalized) left factors whose columns have
+   norm sigma_j, V holds the right singular vectors as columns, and sigma the
+   singular values. Returns SOLVER_SUCCESS or SOLVER_NOT_CONVERGED. */
+static int one_sided_jacobi_svd(const double *A, int n, double *U_scaled,
+                                double *V, double *sigma, int *sweeps_out) {
+    memcpy(U_scaled, A, n * n * sizeof(double));
+    for (int i = 0; i < n; i++) {
+        for (int j = 0; j < n; j++) {
+            V[i * n + j] = (i == j) ? 1.0 : 0.0;
+        }
+    }
+
+    const int max_sweeps = 100;
+    int sweep;
+    int converged = 0;
+    for (sweep = 0; sweep < max_sweeps; sweep++) {
+        double max_offdiag = 0.0;
+        for (int p = 0; p < n - 1; p++) {
+            for (int q = p + 1; q < n; q++) {
+                double alpha = 0.0, beta = 0.0, gamma = 0.0;
+                for (int k = 0; k < n; k++) {
+                    double up = U_scaled[k * n + p];
+                    double uq = U_scaled[k * n + q];
+                    alpha += up * up;
+                    beta += uq * uq;
+                    gamma += up * uq;
+                }
+
+                double denom = sqrt(alpha * beta);
+                if (denom == 0.0) {
+                    continue;
+                }
+                double ratio = fabs(gamma) / denom;
+                if (ratio > max_offdiag) {
+                    max_offdiag = ratio;
+                }
+                if (ratio <= TOLERANCE) {
+                    continue;
+                }
+
+                double zeta = (beta - alpha) / (2.0 * gamma);
+                double t = (zeta >= 0.0)
+                    ? 1.0 / (zeta + sqrt(1.0 + zeta * zeta))
+                    : -1.0 / (-zeta + sqrt(1.0 + zeta * zeta));
+                double c = 1.0 / sqrt(1.0 + t * t);
+                double s = c * t;
+
+                for (int k = 0; k < n; k++) {
+                    double up = U_scaled[k * n + p];
+                    double uq = U_scaled[k * n + q];
+                    U_scaled[k * n + p] = c * up - s * uq;
+                    U_scaled[k * n + q] = s * up + c * uq;
+                    double vp = V[k * n + p];
+                    double vq = V[k * n + q];
+                    V[k * n + p] = c * vp - s * vq;
+                    V[k * n + q] = s * vp + c * vq;
+                }
+            }
+        }
+
+        if (max_offdiag < TOLERANCE) {
+            sweep++;
+            converged = 1;
+            break;
+        }
+    }
+
+    for (int j = 0; j < n; j++) {
+        double norm_sq = 0.0;
+        for (int k = 0; k < n; k++) {
+            norm_sq += U_scaled[k * n + j] * U_scaled[k * n + j];
+        }
+        sigma[j] = sqrt(norm_sq);
+    }
+
+    if (sweeps_out) {
+        *sweeps_out = converged ? sweep : max_sweeps;
+    }
+    return converged ? SOLVER_SUCCESS : SOLVER_NOT_CONVERGED;
+}
+
 /**
  * Direct Methods
  */
@@ -99,13 +252,6 @@ int gaussian_elimination(double *A, double *b, double *x, int n, solver_info *in
         x[i] /= AUG(i, i);
     }
 
-    // Set solution info if the pointer is provided
-    if (info) {
-        info->iterations = 0;  // Direct method has no iterations
-        info->residual = 0.0;  // Exact solution (ignoring round-off errors)
-        info->error_code = result;
-    }
-
 cleanup:
     // Clean up allocated memory
     free(aug);
@@ -114,6 +260,7 @@ cleanup:
     #undef AUG
     #undef MATRIX_A
 
+    set_info(info, 0, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
     return result;
 }
 
@@ -186,13 +333,6 @@ int gauss_jordan(double *A, double *b, double *x, int n, solver_info *info) {
         x[i] = AUG(i, n);
     }
 
-    // Set info if requested
-    if (info) {
-        info->iterations = 0;
-        info->residual = 0.0;
-        info->error_code = result;
-    }
-
 cleanup:
     // Clean up memory
     free(aug);
@@ -200,6 +340,7 @@ cleanup:
     // Undefine macro to avoid name conflicts
     #undef AUG
 
+    set_info(info, 0, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
     return result;
 }
 
@@ -223,13 +364,7 @@ int back_substitution(double *A, double *b, double *x, int n, solver_info *info)
     }
 
 cleanup:
-    // Set info if requested
-    if (info) {
-        info->iterations = 0;
-        info->residual = 0.0;
-        info->error_code = SOLVER_SUCCESS;
-    }
-
+    set_info(info, 0, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
     return result;
 }
 
@@ -253,87 +388,97 @@ int forward_substitution(double *A, double *b, double *x, int n, solver_info *in
     }
 
 cleanup:
-    // Set info if requested
-    if (info) {
-        info->iterations = 0;
-        info->residual = 0.0;
-        info->error_code = result;
-    }
-
+    set_info(info, 0, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
     return result;
 }
 
 /* LU Decomposition */
 int lu_decomposition(double *A, double *b, double *x, int n, solver_info *info) {
-    // Allocate memory for L, U and temporary vectors
-    double *L = NULL;
-    double *U = NULL;
+    // Combined LU factors are stored in LU; partial pivoting yields PA = LU.
+    double *LU = NULL;
     double *y = NULL;
+    double *pb = NULL;
+    int *piv = NULL;
     int result = SOLVER_SUCCESS;
 
-    // Allocate all memory at once
-    L = (double*)calloc(n * n, sizeof(double));
-    U = (double*)calloc(n * n, sizeof(double));
+    LU = (double*)malloc(n * n * sizeof(double));
     y = (double*)malloc(n * sizeof(double));
+    pb = (double*)malloc(n * sizeof(double));
+    piv = (int*)malloc(n * sizeof(int));
 
-    if (!L || !U || !y) {
+    if (!LU || !y || !pb || !piv) {
         result = SOLVER_MEMORY_ERROR;
         goto cleanup;
     }
 
-    // LU decomposition without pivoting
+    memcpy(LU, A, n * n * sizeof(double));
     for (int i = 0; i < n; i++) {
-        // Upper triangular matrix
-        for (int k = i; k < n; k++) {
-            double sum = 0.0;
-            for (int j = 0; j < i; j++) {
-                sum += L[i * n + j] * U[j * n + k];
+        piv[i] = i;
+    }
+
+    // Doolittle factorization with partial pivoting
+    for (int k = 0; k < n; k++) {
+        int pivot_row = k;
+        double pivot_value = fabs(LU[k * n + k]);
+        for (int i = k + 1; i < n; i++) {
+            double candidate = fabs(LU[i * n + k]);
+            if (candidate > pivot_value) {
+                pivot_value = candidate;
+                pivot_row = i;
             }
-            U[i * n + k] = A[i * n + k] - sum;
         }
 
-        // Lower triangular matrix
-        L[i * n + i] = 1.0; // Diagonal elements of L are 1
-        for (int k = i + 1; k < n; k++) {
-            double sum = 0.0;
-            for (int j = 0; j < i; j++) {
-                sum += L[k * n + j] * U[j * n + i];
-            }
+        if (pivot_value < TOLERANCE) {
+            result = SOLVER_SINGULAR_MATRIX;
+            goto cleanup;
+        }
 
-            if (fabs(U[i * n + i]) < TOLERANCE) {
-                result = SOLVER_SINGULAR_MATRIX;
-                goto cleanup;
+        if (pivot_row != k) {
+            for (int j = 0; j < n; j++) {
+                double temp = LU[k * n + j];
+                LU[k * n + j] = LU[pivot_row * n + j];
+                LU[pivot_row * n + j] = temp;
             }
+            int temp_piv = piv[k];
+            piv[k] = piv[pivot_row];
+            piv[pivot_row] = temp_piv;
+        }
 
-            L[k * n + i] = (A[k * n + i] - sum) / U[i * n + i];
+        for (int i = k + 1; i < n; i++) {
+            LU[i * n + k] /= LU[k * n + k];
+            for (int j = k + 1; j < n; j++) {
+                LU[i * n + j] -= LU[i * n + k] * LU[k * n + j];
+            }
         }
     }
 
-    // Forward substitution Ly = b
-    result = forward_substitution(L, b, y, n, NULL);
-    if (result != SOLVER_SUCCESS) {
-        goto cleanup;
+    // Apply the permutation to b, then forward/back substitute
+    for (int i = 0; i < n; i++) {
+        pb[i] = b[piv[i]];
     }
 
-    // Back substitution Ux = y
-    result = back_substitution(U, y, x, n, NULL);
-    if (result != SOLVER_SUCCESS) {
-        goto cleanup;
+    for (int i = 0; i < n; i++) {
+        y[i] = pb[i];
+        for (int j = 0; j < i; j++) {
+            y[i] -= LU[i * n + j] * y[j];
+        }
     }
 
-    // Set info if requested
-    if (info) {
-        info->iterations = 0;
-        info->residual = 0.0;
-        info->error_code = SOLVER_SUCCESS;
+    for (int i = n - 1; i >= 0; i--) {
+        x[i] = y[i];
+        for (int j = i + 1; j < n; j++) {
+            x[i] -= LU[i * n + j] * x[j];
+        }
+        x[i] /= LU[i * n + i];
     }
 
 cleanup:
-    // Clean up allocated memory
-    free(L);
-    free(U);
+    free(LU);
     free(y);
+    free(pb);
+    free(piv);
 
+    set_info(info, 0, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
     return result;
 }
 
@@ -348,7 +493,8 @@ int cholesky(double *A, double *b, double *x, int n, solver_info *info) {
     for (int i = 0; i < n; i++) {
         for (int j = 0; j < i; j++) {
             if (fabs(A[i * n + j] - A[j * n + i]) > TOLERANCE) {
-                return SOLVER_NOT_SPD_MATRIX;
+                result = SOLVER_NOT_SPD_MATRIX;
+                goto cleanup;
             }
         }
     }
@@ -413,19 +559,13 @@ int cholesky(double *A, double *b, double *x, int n, solver_info *info) {
         goto cleanup;
     }
 
-    // Set info if requested
-    if (info) {
-        info->iterations = 0;
-        info->residual = 0.0;
-        info->error_code = result;
-    }
-
 cleanup:
     // Clean up all allocated memory
     free(L);
     free(LT);
     free(y);
 
+    set_info(info, 0, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
     return result;
 }
 
@@ -550,13 +690,6 @@ int qr_decomposition(double *A, double *b, double *x, int n, solver_info *info) 
     // Back substitution to solve Rx = y
     result = back_substitution(R, y, x, n, NULL);
 
-    // Set info if requested
-    if (info) {
-        info->iterations = 0;
-        info->residual = 0.0;
-        info->error_code = result;
-    }
-
 cleanup:
     // Clean up all allocated memory
     free(Q);
@@ -565,6 +698,7 @@ cleanup:
     free(y);
     free(u);  // Safe to call even if u is NULL
 
+    set_info(info, 0, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
     return result;
 }
 
@@ -638,35 +772,13 @@ int matrix_inversion(double *A, double *b, double *x, int n, solver_info *info) 
         }
     }
 
-    // Calculate residual for info if needed
-    double residual = 0.0;
-    if (info) {
-        double *res_vec = (double*)malloc(n * sizeof(double));
-        if (res_vec) {
-            // Compute residual r = b - A*x
-            for (int i = 0; i < n; i++) {
-                double sum = 0.0;
-                for (int j = 0; j < n; j++) {
-                    sum += A[i * n + j] * x[j];
-                }
-                res_vec[i] = b[i] - sum;
-                residual += res_vec[i] * res_vec[i];
-            }
-            residual = sqrt(residual);
-            free(res_vec);
-        }
-
-        info->iterations = 0;  // Direct method has no iterations
-        info->residual = residual;
-        info->error_code = result;
-    }
-
 cleanup:
     // Clean up all allocated memory
     free(A_inv);
     free(A_copy);
     free(identity);
 
+    set_info(info, 0, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
     return result;
 }
 
@@ -674,73 +786,22 @@ cleanup:
 int cramers_rule(double *A, double *b, double *x, int n, solver_info *info) {
     int result = SOLVER_SUCCESS;
     double *modified_matrix = NULL;
-    double *submatrix = NULL;
     double det_A = 0.0;
 
     // For large matrices, Cramer's rule is inefficient
     if (n > 10) {
-        if (info) {
-            info->error_code = SOLVER_INVALID_PARAMETERS;
-            info->iterations = 0;
-            info->residual = 0.0;
-        }
+        set_info(info, 0, NAN, SOLVER_INVALID_PARAMETERS);
         return SOLVER_INVALID_PARAMETERS;
     }
 
-    // Allocate memory for the modified matrix and submatrix
     modified_matrix = (double*)malloc(n * n * sizeof(double));
-    submatrix = (double*)malloc((n-1) * (n-1) * sizeof(double));
-
-    if (!modified_matrix || (n > 1 && !submatrix)) {
+    if (!modified_matrix) {
         result = SOLVER_MEMORY_ERROR;
         goto cleanup;
     }
 
-    // Calculate determinant of matrix A
-    if (n == 1) {
-        det_A = A[0];
-    } else if (n == 2) {
-        det_A = A[0] * A[3] - A[1] * A[2];
-    } else {
-        // For larger matrices, use expansion by minors
-        det_A = 0.0;
-        for (int j = 0; j < n; j++) {
-            // Create submatrix by excluding first row and column j
-            int sub_idx = 0;
-            for (int row = 1; row < n; row++) {
-                for (int col = 0; col < n; col++) {
-                    if (col != j) {
-                        submatrix[sub_idx++] = A[row * n + col];
-                    }
-                }
-            }
-
-            // Calculate determinant of submatrix
-            double sub_det;
-            if (n-1 == 1) {
-                sub_det = submatrix[0];
-            } else if (n-1 == 2) {
-                sub_det = submatrix[0] * submatrix[3] - submatrix[1] * submatrix[2];
-            } else {
-                // For larger submatrices, we would need another approach
-                // Since n > 10 is filtered out earlier, we can use a simplification
-                // that handles up to 3x3 matrices for this example
-                if (n-1 == 3) {
-                    sub_det = submatrix[0] * (submatrix[4] * submatrix[8] - submatrix[5] * submatrix[7]) -
-                              submatrix[1] * (submatrix[3] * submatrix[8] - submatrix[5] * submatrix[6]) +
-                              submatrix[2] * (submatrix[3] * submatrix[7] - submatrix[4] * submatrix[6]);
-                } else {
-                    // This is a simplified implementation that works for matrices up to 4x4
-                    // For larger matrices, you would need to implement an iterative algorithm
-                    sub_det = 0.0;
-                }
-            }
-
-            // Add or subtract the determinant
-            double sign = (j % 2 == 0) ? 1.0 : -1.0;
-            det_A += sign * A[j] * sub_det;
-        }
-    }
+    // Determinant of A via Gaussian elimination with partial pivoting
+    det_A = matrix_determinant(A, n);
 
     // Check if A is singular (det(A) = 0)
     if (fabs(det_A) < TOLERANCE) {
@@ -748,87 +809,20 @@ int cramers_rule(double *A, double *b, double *x, int n, solver_info *info) {
         goto cleanup;
     }
 
-    // For each variable, create modified matrix and calculate determinant
+    // For each variable, replace the i-th column with b and take the ratio of determinants
     for (int i = 0; i < n; i++) {
-        // Copy A to modified matrix
         memcpy(modified_matrix, A, n * n * sizeof(double));
-
-        // Replace i-th column with b
         for (int row = 0; row < n; row++) {
             modified_matrix[row * n + i] = b[row];
         }
 
-        // Calculate determinant of modified matrix using the same approach
-        double det_modified;
-        if (n == 1) {
-            det_modified = modified_matrix[0];
-        } else if (n == 2) {
-            det_modified = modified_matrix[0] * modified_matrix[3] - modified_matrix[1] * modified_matrix[2];
-        } else {
-            // For larger matrices, use expansion by minors
-            det_modified = 0.0;
-            for (int j = 0; j < n; j++) {
-                // Create submatrix by excluding first row and column j
-                int sub_idx = 0;
-                for (int row = 1; row < n; row++) {
-                    for (int col = 0; col < n; col++) {
-                        if (col != j) {
-                            submatrix[sub_idx++] = modified_matrix[row * n + col];
-                        }
-                    }
-                }
-
-                // Calculate determinant of submatrix
-                double sub_det;
-                if (n-1 == 1) {
-                    sub_det = submatrix[0];
-                } else if (n-1 == 2) {
-                    sub_det = submatrix[0] * submatrix[3] - submatrix[1] * submatrix[2];
-                } else if (n-1 == 3) {
-                    sub_det = submatrix[0] * (submatrix[4] * submatrix[8] - submatrix[5] * submatrix[7]) -
-                              submatrix[1] * (submatrix[3] * submatrix[8] - submatrix[5] * submatrix[6]) +
-                              submatrix[2] * (submatrix[3] * submatrix[7] - submatrix[4] * submatrix[6]);
-                } else {
-                    // Simplified for matrices up to 4x4
-                    sub_det = 0.0;
-                }
-
-                // Add or subtract the determinant
-                double sign = (j % 2 == 0) ? 1.0 : -1.0;
-                det_modified += sign * modified_matrix[j] * sub_det;
-            }
-        }
-
-        // Calculate x[i] = det(modified) / det(A)
+        double det_modified = matrix_determinant(modified_matrix, n);
         x[i] = det_modified / det_A;
-    }
-
-    // Calculate residual for info if needed
-    double residual = 0.0;
-    if (info) {
-        double *res_vec = (double*)malloc(n * sizeof(double));
-        if (res_vec) {
-            // Compute residual r = b - A*x
-            for (int i = 0; i < n; i++) {
-                double sum = 0.0;
-                for (int j = 0; j < n; j++) {
-                    sum += A[i * n + j] * x[j];
-                }
-                res_vec[i] = b[i] - sum;
-                residual += res_vec[i] * res_vec[i];
-            }
-            residual = sqrt(residual);
-            free(res_vec);
-        }
-
-        info->iterations = 0;  // Direct method has no iterations
-        info->residual = residual;
-        info->error_code = result;
     }
 
 cleanup:
     free(modified_matrix);
-    free(submatrix);
+    set_info(info, 0, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
     return result;
 }
 
@@ -928,13 +922,6 @@ int row_echelon(double *A, double *b, double *x, int n, solver_info *info) {
         }
     }
 
-    // Set info if requested
-    if (info) {
-        info->iterations = 0;
-        info->residual = 0.0;
-        info->error_code = result;
-    }
-
 cleanup:
     // Clean up memory
     free(aug);
@@ -942,6 +929,7 @@ cleanup:
     // Undefine macro to avoid name conflicts
     #undef AUG
 
+    set_info(info, 0, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
     return result;
 }
 
@@ -1035,13 +1023,6 @@ int reduced_row_echelon(double *A, double *b, double *x, int n, solver_info *inf
         x[i] = AUG(i, n);
     }
 
-    // Set info if requested
-    if (info) {
-        info->iterations = 0;
-        info->residual = 0.0;
-        info->error_code = result;
-    }
-
 cleanup:
     // Clean up memory
     free(aug);
@@ -1049,6 +1030,7 @@ cleanup:
     // Undefine macro to avoid name conflicts
     #undef AUG
 
+    set_info(info, 0, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
     return result;
 }
 
@@ -1131,13 +1113,6 @@ int triangularization(double *A, double *b, double *x, int n, solver_info *info)
         x[i] /= AUG(i, i);
     }
 
-    // Set solution info if the pointer is provided
-    if (info) {
-        info->iterations = 0;  // Direct method has no iterations
-        info->residual = 0.0;  // Exact solution (ignoring round-off errors)
-        info->error_code = result;
-    }
-
 cleanup:
     // Clean up allocated memory
     free(aug);
@@ -1145,6 +1120,7 @@ cleanup:
     // Remove macro definitions to avoid name conflicts
     #undef AUG
 
+    set_info(info, 0, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
     return result;
 }
 
@@ -1203,15 +1179,12 @@ int jacobi(double *A, double *b, double *x, int n, solver_info *info) {
         result = SOLVER_NOT_CONVERGED;
     }
 
-    // Set info if requested
-    if (info) {
-        info->iterations = iter + 1;
-        info->residual = residual;
-        info->error_code = result;
-    }
-
 cleanup:
     free(x_new);
+    set_info(info,
+             (iter < MAX_ITERATIONS) ? iter + 1 : MAX_ITERATIONS,
+             result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN,
+             result);
     return result;
 }
 
@@ -1253,8 +1226,8 @@ int gauss_seidel(double *A, double *b, double *x, int n, solver_info *info) {
 
             // Check for singular matrix
             if (fabs(A[i * n + i]) < TOLERANCE) {
-                free(x_old);
-                return SOLVER_SINGULAR_MATRIX;
+                return_code = SOLVER_SINGULAR_MATRIX;
+                goto cleanup;
             }
 
             x[i] = (b[i] - sum1 - sum2) / A[i * n + i];
@@ -1276,16 +1249,14 @@ int gauss_seidel(double *A, double *b, double *x, int n, solver_info *info) {
         return_code = SOLVER_NOT_CONVERGED;
     }
 
-    // Set info if requested
-    if (info) {
-        info->iterations = iter + 1;
-        info->residual = residual;
-        info->error_code = return_code;
-    }
-
+cleanup:
     // Clean up allocated memory
     free(x_old);
 
+    set_info(info,
+             (iter < MAX_ITERATIONS) ? iter + 1 : MAX_ITERATIONS,
+             return_code == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN,
+             return_code);
     return return_code;
 }
 
@@ -1358,15 +1329,13 @@ int sor(double *A, double *b, double *x, int n, solver_info *info) {
     }
 
 cleanup:
-    // Set info if requested
-    if (info) {
-        info->iterations = iter + 1;
-        info->residual = residual;
-        info->error_code = result;
-    }
-
     // Clean up memory
     free(x_old);
+
+    set_info(info,
+             (iter < MAX_ITERATIONS) ? iter + 1 : MAX_ITERATIONS,
+             result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN,
+             result);
     return result;
 }
 
@@ -1378,11 +1347,14 @@ int conjugate_gradient(double *A, double *b, double *x, int n, solver_info *info
     double *p = NULL;
     double *Ap = NULL;
 
+    int iterations_done = 0;
+
     // Check matrix symmetry
     for (int i = 0; i < n; i++) {
         for (int j = 0; j < i; j++) {
             if (fabs(A[i * n + j] - A[j * n + i]) > TOLERANCE) {
-                return SOLVER_NOT_SPD_MATRIX;
+                result = SOLVER_NOT_SPD_MATRIX;
+                goto cleanup;
             }
         }
     }
@@ -1434,6 +1406,7 @@ int conjugate_gradient(double *A, double *b, double *x, int n, solver_info *info
 
         if (fabs(p_dot_Ap) < TOLERANCE) {
             result = SOLVER_NOT_CONVERGED;
+            iterations_done = iter + 1;
             goto cleanup;
         }
 
@@ -1453,12 +1426,8 @@ int conjugate_gradient(double *A, double *b, double *x, int n, solver_info *info
 
         // Check convergence
         if (sqrt(r_dot_r_new) < TOLERANCE) {
-            if (info) {
-                info->iterations = iter + 1;
-                info->residual = sqrt(r_dot_r_new);
-                info->error_code = SOLVER_SUCCESS;
-            }
             result = SOLVER_SUCCESS;
+            iterations_done = iter + 1;
             goto cleanup;
         }
 
@@ -1472,21 +1441,17 @@ int conjugate_gradient(double *A, double *b, double *x, int n, solver_info *info
     }
 
     // Set result based on convergence
+    iterations_done = iter;
     result = (iter == MAX_ITERATIONS) ? SOLVER_NOT_CONVERGED : SOLVER_SUCCESS;
 
 cleanup:
-    // Set info if requested
-    if (info) {
-        info->iterations = iter;
-        info->residual = sqrt(r_dot_r);
-        info->error_code = result;
-    }
-
     // Free all allocated memory
     free(r);
     free(p);
     free(Ap);
 
+    set_info(info, iterations_done,
+             result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
     return result;
 }
 
@@ -1561,14 +1526,6 @@ int gradient_descent(double *A, double *b, double *x, int n, solver_info *info) 
         }
     }
 
-    // Set info if requested
-    if (info) {
-        info->iterations = iterations;
-        info->residual = residual_norm;
-        info->error_code = (iterations < MAX_ITERATIONS) ?
-                           SOLVER_SUCCESS : SOLVER_NO_CONVERGENCE;
-    }
-
     // Update result if no convergence
     if (iterations >= MAX_ITERATIONS) {
         result = SOLVER_NO_CONVERGENCE;
@@ -1580,6 +1537,7 @@ cleanup:
     if (gradient) free(gradient);
     if (Ax) free(Ax);
 
+    set_info(info, iterations, result == SOLVER_SUCCESS ? residual_norm : NAN, result);
     return result;
 }
 
@@ -1590,225 +1548,163 @@ cleanup:
  * but can also be used for non-symmetric systems.
  */
 int minres(double *A, double *b, double *x, int n, solver_info *info) {
-    double *r = NULL;      // Residual vector
-    double *v = NULL;      // Lanczos vector
-    double *v_prev = NULL; // Previous Lanczos vector
-    double *v_new = NULL;  // New Lanczos vector
-    double *p = NULL;      // Search direction
-    double *p_prev = NULL; // Previous search direction
-    double *p_new = NULL;  // New search direction
-    double beta = 0.0;     // Lanczos coefficient
-    double beta_prev = 0.0;// Previous Lanczos coefficient
-    double alpha = 0.0;    // Lanczos coefficient
-    double gamma0 = 0.0, gamma1 = 0.0, gamma2 = 0.0; // Givens rotation parameters
-    double sigma0 = 0.0, sigma1 = 0.0; // More Givens rotation parameters
-    double tau0 = 0.0, tau1 = 0.0; // Temporary values for solution update
-    double residual_norm = 0.0; // Current residual norm
-    double initial_residual_norm = 0.0; // Initial residual norm
-    int iter = 0;
     int result = SOLVER_SUCCESS;
+    int steps = 0;
 
-    // Allocate memory for vectors
-    r = (double*)malloc(n * sizeof(double));
-    if (!r) {
+    // Lanczos tridiagonalization followed by a Givens least-squares solve, which
+    // minimizes ||b - A x|| over the Krylov subspace (genuine minimal residual).
+    double *V = NULL;      // Lanczos vectors, row k holds v_k (length n)
+    double *w = NULL;      // work vector for A*v
+    double *alpha = NULL;  // tridiagonal diagonal
+    double *beta = NULL;   // tridiagonal off-diagonal (beta[0] = ||b||)
+    double *H = NULL;      // (steps+1) x steps tridiagonal, reduced in place
+    double *g = NULL;      // transformed right-hand side
+    double *cs = NULL;     // Givens cosines
+    double *sn = NULL;     // Givens sines
+    double *y = NULL;      // least-squares solution coefficients
+
+    V = (double*)calloc((size_t)(n + 1) * n, sizeof(double));
+    w = (double*)malloc(n * sizeof(double));
+    alpha = (double*)calloc(n, sizeof(double));
+    beta = (double*)calloc(n + 1, sizeof(double));
+    H = (double*)calloc((size_t)(n + 1) * n, sizeof(double));
+    g = (double*)calloc(n + 1, sizeof(double));
+    cs = (double*)calloc(n, sizeof(double));
+    sn = (double*)calloc(n, sizeof(double));
+    y = (double*)calloc(n, sizeof(double));
+
+    if (!V || !w || !alpha || !beta || !H || !g || !cs || !sn || !y) {
         result = SOLVER_MEMORY_ERROR;
         goto cleanup;
     }
 
-    v = (double*)malloc(n * sizeof(double));
-    if (!v) {
-        result = SOLVER_MEMORY_ERROR;
-        goto cleanup;
-    }
-
-    v_prev = (double*)malloc(n * sizeof(double));
-    if (!v_prev) {
-        result = SOLVER_MEMORY_ERROR;
-        goto cleanup;
-    }
-
-    v_new = (double*)malloc(n * sizeof(double));
-    if (!v_new) {
-        result = SOLVER_MEMORY_ERROR;
-        goto cleanup;
-    }
-
-    p = (double*)malloc(n * sizeof(double));
-    if (!p) {
-        result = SOLVER_MEMORY_ERROR;
-        goto cleanup;
-    }
-
-    p_prev = (double*)malloc(n * sizeof(double));
-    if (!p_prev) {
-        result = SOLVER_MEMORY_ERROR;
-        goto cleanup;
-    }
-
-    p_new = (double*)malloc(n * sizeof(double));
-    if (!p_new) {
-        result = SOLVER_MEMORY_ERROR;
-        goto cleanup;
-    }
-
-    // Initialize solution vector x to zeros if not provided
     for (int i = 0; i < n; i++) {
         x[i] = 0.0;
     }
 
-    // Compute initial residual r = b - A*x
-    // Since x is initially zero, r = b
+    double beta1 = 0.0;
     for (int i = 0; i < n; i++) {
-        r[i] = b[i];
+        beta1 += b[i] * b[i];
+    }
+    beta1 = sqrt(beta1);
+
+    if (beta1 < TOLERANCE) {
+        result = SOLVER_SUCCESS;
+        goto cleanup;
     }
 
-    // Calculate initial residual norm
-    initial_residual_norm = 0.0;
+    beta[0] = beta1;
     for (int i = 0; i < n; i++) {
-        initial_residual_norm += r[i] * r[i];
-    }
-    initial_residual_norm = sqrt(initial_residual_norm);
-
-    if (initial_residual_norm < TOLERANCE) {
-        // b is already close to zero, solution is x = 0
-        residual_norm = initial_residual_norm;
-        iter = 0;
-        goto reporting;
+        V[i] = b[i] / beta1;
     }
 
-    // Initialize first Lanczos vector v = r / ||r||
-    beta = initial_residual_norm;
-    for (int i = 0; i < n; i++) {
-        v[i] = r[i] / beta;
-        v_prev[i] = 0.0;
-        p_prev[i] = 0.0;
-        p[i] = 0.0;
-    }
-
-    gamma0 = 1.0;
-    gamma1 = 1.0;
-    sigma0 = 0.0;
-    sigma1 = 0.0;
-    tau0 = beta;
-
-    // Main iteration loop
-    for (iter = 1; iter <= MAX_ITERATIONS; iter++) {
-        // Compute v_new = A*v
+    for (steps = 0; steps < n; steps++) {
         for (int i = 0; i < n; i++) {
-            v_new[i] = 0.0;
+            double sum = 0.0;
             for (int j = 0; j < n; j++) {
-                v_new[i] += A[i * n + j] * v[j];
+                sum += A[i * n + j] * V[steps * n + j];
+            }
+            w[i] = sum;
+        }
+
+        double a = 0.0;
+        for (int i = 0; i < n; i++) {
+            a += V[steps * n + i] * w[i];
+        }
+        alpha[steps] = a;
+
+        for (int i = 0; i < n; i++) {
+            w[i] -= a * V[steps * n + i];
+            if (steps > 0) {
+                w[i] -= beta[steps] * V[(steps - 1) * n + i];
             }
         }
 
-        // Compute alpha = v' * v_new
-        alpha = 0.0;
+        double bn = 0.0;
         for (int i = 0; i < n; i++) {
-            alpha += v[i] * v_new[i];
+            bn += w[i] * w[i];
         }
+        bn = sqrt(bn);
+        beta[steps + 1] = bn;
 
-        // Update v_new = v_new - alpha*v - beta*v_prev
-        for (int i = 0; i < n; i++) {
-            v_new[i] = v_new[i] - alpha * v[i] - beta * v_prev[i];
-        }
-
-        // Compute new beta
-        beta_prev = beta;
-        beta = 0.0;
-        for (int i = 0; i < n; i++) {
-            beta += v_new[i] * v_new[i];
-        }
-        beta = sqrt(beta);
-
-        // Normalize v_new
-        if (beta > TOLERANCE) {
-            for (int i = 0; i < n; i++) {
-                v_new[i] /= beta;
-            }
-        }
-
-        // Apply previous Givens rotations to the new column of the tridiagonal matrix
-        double alpha_hat = gamma0 * alpha - gamma2 * sigma0 * beta_prev;
-        double beta_hat = gamma0 * beta;
-
-        // Compute new Givens rotation
-        gamma2 = gamma1;
-        gamma1 = gamma0;
-
-        double nu = sqrt(alpha_hat * alpha_hat + beta_hat * beta_hat);
-        if (nu < TOLERANCE) {
-            gamma0 = 1.0;
-            sigma1 = 0.0;
-        } else {
-            gamma0 = alpha_hat / nu;
-            sigma1 = beta_hat / nu;
-        }
-
-        // Update the solution
-        tau1 = tau0;
-        tau0 = gamma0 * tau1;
-
-        // Update direction vectors
-        for (int i = 0; i < n; i++) {
-            p_new[i] = (v[i] - sigma0 * p_prev[i] - alpha_hat * p[i]) / nu;
-        }
-
-        // Update solution vector
-        for (int i = 0; i < n; i++) {
-            x[i] += tau0 * p_new[i];
-        }
-
-        // Shift vectors for next iteration
-        double *temp;
-
-        // Shift v vectors
-        temp = v_prev;
-        v_prev = v;
-        v = v_new;
-        v_new = temp;
-
-        // Shift p vectors
-        temp = p_prev;
-        p_prev = p;
-        p = p_new;
-        p_new = temp;
-
-        // Update sigma values
-        sigma0 = sigma1;
-
-        // Compute residual norm
-        residual_norm = fabs(sigma1 * tau1);
-
-        // Check convergence
-        if (residual_norm / initial_residual_norm < TOLERANCE) {
+        if (bn < TOLERANCE) {
+            steps++;
             break;
         }
+        for (int i = 0; i < n; i++) {
+            V[(steps + 1) * n + i] = w[i] / bn;
+        }
     }
 
-reporting:
-    // Set solver information if requested
-    if (info) {
-        info->iterations = iter;
-        info->residual = residual_norm / initial_residual_norm;
+    int m = steps;
 
-        if (iter >= MAX_ITERATIONS && residual_norm / initial_residual_norm >= TOLERANCE) {
-            info->error_code = SOLVER_NO_CONVERGENCE;
-            result = SOLVER_NO_CONVERGENCE;
-        } else {
-            info->error_code = SOLVER_SUCCESS;
+    // Assemble the (m+1) x m tridiagonal least-squares system T_bar y = beta1 e1
+    for (int j = 0; j < m; j++) {
+        H[j * m + j] = alpha[j];
+        H[(j + 1) * m + j] = beta[j + 1];
+        if (j > 0) {
+            H[(j - 1) * m + j] = beta[j];
         }
+    }
+    g[0] = beta1;
+
+    // Reduce to upper triangular form with Givens rotations, transforming g alongside
+    for (int j = 0; j < m; j++) {
+        for (int i = 0; i < j; i++) {
+            double t1 = cs[i] * H[i * m + j] + sn[i] * H[(i + 1) * m + j];
+            H[(i + 1) * m + j] = -sn[i] * H[i * m + j] + cs[i] * H[(i + 1) * m + j];
+            H[i * m + j] = t1;
+        }
+
+        double h_jj = H[j * m + j];
+        double h_j1j = H[(j + 1) * m + j];
+        double denom = sqrt(h_jj * h_jj + h_j1j * h_j1j);
+        if (denom < TOLERANCE) {
+            cs[j] = 1.0;
+            sn[j] = 0.0;
+            continue;
+        }
+        cs[j] = h_jj / denom;
+        sn[j] = h_j1j / denom;
+        H[j * m + j] = denom;
+        H[(j + 1) * m + j] = 0.0;
+
+        double gt = cs[j] * g[j] + sn[j] * g[j + 1];
+        g[j + 1] = -sn[j] * g[j] + cs[j] * g[j + 1];
+        g[j] = gt;
+    }
+
+    for (int i = m - 1; i >= 0; i--) {
+        double sum = g[i];
+        for (int k = i + 1; k < m; k++) {
+            sum -= H[i * m + k] * y[k];
+        }
+        if (fabs(H[i * m + i]) < TOLERANCE) {
+            result = SOLVER_NOT_CONVERGED;
+            goto cleanup;
+        }
+        y[i] = sum / H[i * m + i];
+    }
+
+    for (int i = 0; i < n; i++) {
+        double sum = 0.0;
+        for (int j = 0; j < m; j++) {
+            sum += V[j * n + i] * y[j];
+        }
+        x[i] = sum;
     }
 
 cleanup:
-    // Free allocated memory - check each pointer before freeing
-    if (r) free(r);
-    if (v) free(v);
-    if (v_prev) free(v_prev);
-    if (v_new) free(v_new);
-    if (p) free(p);
-    if (p_prev) free(p_prev);
-    if (p_new) free(p_new);
-
+    free(V);
+    free(w);
+    free(alpha);
+    free(beta);
+    free(H);
+    free(g);
+    free(cs);
+    free(sn);
+    free(y);
+    set_info(info, steps, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
     return result;
 }
 
@@ -1834,12 +1730,12 @@ int gmres(double *A, double *b, double *x, int n, solver_info *info) {
     double residual_norm = 0.0;// Current residual norm
     double initial_residual_norm = 0.0; // Initial residual norm
     int iter = 0;
+    int total_iter = 0;
     int result = SOLVER_SUCCESS;
     int i, j;                  // Loop counters
 
     // GMRES restart parameter - could be made configurable
     int restart = n;
-    if (restart > n) restart = n;
 
     // Allocate memory for vectors
     r = (double*)malloc(n * sizeof(double));
@@ -1904,7 +1800,6 @@ int gmres(double *A, double *b, double *x, int n, solver_info *info) {
     }
 
     // Main GMRES loop (with restarts)
-    int total_iter = 0;
     while (total_iter < MAX_ITERATIONS) {
         // Compute initial residual r = b - A*x
         for (i = 0; i < n; i++) {
@@ -2022,7 +1917,11 @@ int gmres(double *A, double *b, double *x, int n, solver_info *info) {
             for (j = i + 1; j < iter; j++) {
                 y[i] -= H[i][j] * y[j];
             }
-            y[i] /= H[i][i];
+            if (fabs(H[i][i]) < TOLERANCE) {
+                y[i] = 0.0;
+            } else {
+                y[i] /= H[i][i];
+            }
         }
 
         // Update the solution x = x + V * y
@@ -2044,17 +1943,9 @@ int gmres(double *A, double *b, double *x, int n, solver_info *info) {
     }
 
 reporting:
-    // Set solver information if requested
-    if (info) {
-        info->iterations = total_iter;
-        info->residual = residual_norm / initial_residual_norm;
-
-        if (total_iter >= MAX_ITERATIONS && residual_norm / initial_residual_norm >= TOLERANCE) {
-            info->error_code = SOLVER_NO_CONVERGENCE;
-            result = SOLVER_NO_CONVERGENCE;
-        } else {
-            info->error_code = SOLVER_SUCCESS;
-        }
+    if (total_iter >= MAX_ITERATIONS &&
+        residual_norm / initial_residual_norm >= TOLERANCE) {
+        result = SOLVER_NO_CONVERGENCE;
     }
 
 cleanup:
@@ -2082,6 +1973,7 @@ cleanup:
         free(H);
     }
 
+    set_info(info, total_iter, result == SOLVER_SUCCESS ? residual_norm : NAN, result);
     return result;
 }
 
@@ -2150,7 +2042,7 @@ int bicg(double *A, double *b, double *x, int n, solver_info *info) {
             rho += r_tilde[i] * r[i];
         }
 
-        if (fabs(rho) < TOLERANCE) {
+        if (fabs(rho) < 1e-30) {
             result = SOLVER_NO_CONVERGENCE;
             break;
         }
@@ -2180,7 +2072,7 @@ int bicg(double *A, double *b, double *x, int n, solver_info *info) {
             p_tilde_Ap += p_tilde[i] * Ap[i];
         }
 
-        if (fabs(p_tilde_Ap) < TOLERANCE) {
+        if (fabs(p_tilde_Ap) < 1e-30) {
             result = SOLVER_NO_CONVERGENCE;
             break;
         }
@@ -2217,16 +2109,15 @@ int bicg(double *A, double *b, double *x, int n, solver_info *info) {
         residual_norm = sqrt(residual_norm);
     }
 
-    // Set solver info if requested
-    if (info) {
-        info->iterations = iter;
-        info->residual = residual_norm;
-        info->error_code = result;
+    // A run that exhausts the iteration budget without converging has not succeeded
+    if (result == SOLVER_SUCCESS && iter >= MAX_ITERATIONS && residual_norm > TOLERANCE) {
+        result = SOLVER_NOT_CONVERGED;
     }
 
     // Free allocated memory
     free(memory_block);
 
+    set_info(info, iter, result == SOLVER_SUCCESS ? residual_norm : NAN, result);
     return result;
 }
 
@@ -2301,19 +2192,13 @@ int iterative_refinement(double *A, double *b, double *x, int n, solver_info *in
         }
     }
 
-    // Set solution info if the pointer is provided
-    if (info) {
-        info->iterations = iterations;
-        info->residual = residual_norm;
-        info->error_code = result;
-    }
-
 cleanup:
     // Clean up allocated memory
     if (r) free(r);
     if (d) free(d);
     if (A_copy) free(A_copy);
 
+    set_info(info, iterations, result == SOLVER_SUCCESS ? residual_norm : NAN, result);
     return result;
 }
 
@@ -2381,31 +2266,13 @@ int normal_equations(double *A, double *b, double *x, int n, solver_info *info) 
         result = gaussian_elimination(ATA, ATb, x, n, NULL);
     }
 
-    // Calculate residual if info is requested
-    if (info) {
-        double residual = 0.0;
-
-        // Compute ||A*x - b||^2
-        for (int i = 0; i < n; i++) {
-            double row_sum = 0.0;
-            for (int j = 0; j < n; j++) {
-                row_sum += A[i * n + j] * x[j];
-            }
-            double diff = row_sum - b[i];
-            residual += diff * diff;
-        }
-
-        info->iterations = 0;  // Direct method has no iterations
-        info->residual = sqrt(residual);
-        info->error_code = result;
-    }
-
 cleanup:
     // Free allocated memory - check each pointer before freeing
     if (AT) free(AT);
     if (ATA) free(ATA);
     if (ATb) free(ATb);
 
+    set_info(info, 0, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
     return result;
 }
 
@@ -2415,7 +2282,6 @@ int orthogonal_projection(double *A, double *b, double *x, int n, solver_info *i
     double *AT = NULL;        // Transpose of A
     double *ATA = NULL;       // A^T * A
     double *ATb = NULL;       // A^T * b
-    double *residual_vector = NULL;
 
     // Allocate memory for temporary matrices and vectors
     AT = (double*)malloc(n * n * sizeof(double));
@@ -2465,546 +2331,99 @@ int orthogonal_projection(double *A, double *b, double *x, int n, solver_info *i
     // Using a direct method, such as Gauss-Jordan
     result = gauss_jordan(ATA, ATb, x, n, NULL);
 
-    // Calculate residual if info is requested
-    if (info) {
-        info->iterations = 0;  // Direct method has no iterations
-        info->error_code = result;
-        info->residual = 0.0;
-
-        residual_vector = (double*)malloc(n * sizeof(double));
-        if (residual_vector) {
-            double residual = 0.0;
-
-            // Compute Ax and then b - Ax
-            for (int i = 0; i < n; i++) {
-                residual_vector[i] = 0.0;
-                for (int j = 0; j < n; j++) {
-                    residual_vector[i] += A[i * n + j] * x[j];
-                }
-                residual_vector[i] = b[i] - residual_vector[i];
-                residual += residual_vector[i] * residual_vector[i];
-            }
-
-            info->residual = sqrt(residual);
-        }
-    }
-
 cleanup:
     // Free all allocated memory
     if (AT) free(AT);
     if (ATA) free(ATA);
     if (ATb) free(ATb);
-    if (residual_vector) free(residual_vector);
 
+    set_info(info, 0, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
     return result;
 }
 
 /* Singular Value Decomposition (SVD) */
 int svd(double *A, double *b, double *x, int n, solver_info *info) {
     int result = SOLVER_SUCCESS;
-    double *U = NULL;       // Left singular vectors
-    double *S = NULL;       // Singular values
-    double *VT = NULL;      // Transpose of right singular vectors
-    double *bidiag = NULL;  // Bidiagonal form
-    double *e = NULL;       // Superdiagonal elements
-    double *work = NULL;    // Work array
-    double *UT_b = NULL;    // U^T * b
+    double *U_scaled = NULL;  // Columns scaled by the singular values
+    double *V = NULL;         // Right singular vectors as columns
+    double *S = NULL;         // Singular values
+    int sweeps = 0;
 
-    // Allocate memory
-    U = (double*)malloc(n * n * sizeof(double));
-    if (!U) {
-        result = SOLVER_MEMORY_ERROR;
-        goto cleanup;
-    }
-
+    U_scaled = (double*)malloc(n * n * sizeof(double));
+    V = (double*)malloc(n * n * sizeof(double));
     S = (double*)malloc(n * sizeof(double));
-    if (!S) {
+    if (!U_scaled || !V || !S) {
         result = SOLVER_MEMORY_ERROR;
         goto cleanup;
     }
 
-    VT = (double*)malloc(n * n * sizeof(double));
-    if (!VT) {
-        result = SOLVER_MEMORY_ERROR;
+    result = one_sided_jacobi_svd(A, n, U_scaled, V, S, &sweeps);
+    if (result != SOLVER_SUCCESS) {
         goto cleanup;
     }
 
-    bidiag = (double*)malloc(n * sizeof(double));
-    if (!bidiag) {
-        result = SOLVER_MEMORY_ERROR;
-        goto cleanup;
-    }
-
-    e = (double*)malloc(n * sizeof(double));
-    if (!e) {
-        result = SOLVER_MEMORY_ERROR;
-        goto cleanup;
-    }
-
-    work = (double*)malloc(4 * n * sizeof(double));
-    if (!work) {
-        result = SOLVER_MEMORY_ERROR;
-        goto cleanup;
-    }
-
-    UT_b = (double*)malloc(n * sizeof(double));
-    if (!UT_b) {
-        result = SOLVER_MEMORY_ERROR;
-        goto cleanup;
-    }
-
-    // Initialize matrices
-    for (int i = 0; i < n; i++) {
-        for (int j = 0; j < n; j++) {
-            U[i*n + j] = A[i*n + j];  // Copy A to U
-            VT[i*n + j] = (i == j) ? 1.0 : 0.0;  // Initialize VT as identity
-        }
-        bidiag[i] = 0.0;
-        e[i] = 0.0;
-        UT_b[i] = 0.0;
-    }
-
-    // Step 1: Bidiagonalization using Householder transformations (Golub-Kahan)
-    for (int k = 0; k < n; k++) {
-        // Householder transformation to zero elements below diagonal in column k
-        double alpha = 0.0;
-        for (int i = k; i < n; i++) {
-            alpha += U[i*n + k] * U[i*n + k];
-        }
-        alpha = sqrt(alpha);
-
-        if (fabs(alpha) > TOLERANCE) {
-            if (U[k*n + k] < 0.0) alpha = -alpha;
-
-            for (int i = k; i < n; i++) {
-                U[i*n + k] /= alpha;
-            }
-            U[k*n + k] += 1.0;
-
-            // Apply Householder transformation to U
-            for (int j = k + 1; j < n; j++) {
-                double s = 0.0;
-                for (int i = k; i < n; i++) {
-                    s += U[i*n + k] * U[i*n + j];
-                }
-                s /= U[k*n + k];
-
-                for (int i = k; i < n; i++) {
-                    U[i*n + j] -= s * U[i*n + k];
-                }
-            }
-
-            // Apply Householder transformation to right side
-            double s = 0.0;
-            for (int i = k; i < n; i++) {
-                s += U[i*n + k] * b[i];
-            }
-            s /= U[k*n + k];
-
-            for (int i = k; i < n; i++) {
-                b[i] -= s * U[i*n + k];
-            }
-        }
-
-        bidiag[k] = alpha;
-
-        if (k < n - 1) {
-            // Householder transformation to zero elements right of superdiagonal in row k
-            alpha = 0.0;
-            for (int j = k + 1; j < n; j++) {
-                alpha += U[k*n + j] * U[k*n + j];
-            }
-            alpha = sqrt(alpha);
-
-            if (fabs(alpha) > TOLERANCE) {
-                if (U[k*n + k+1] < 0.0) alpha = -alpha;
-
-                for (int j = k + 1; j < n; j++) {
-                    U[k*n + j] /= alpha;
-                }
-                U[k*n + k+1] += 1.0;
-
-                // Apply Householder transformation to U
-                for (int i = k + 1; i < n; i++) {
-                    double s = 0.0;
-                    for (int j = k + 1; j < n; j++) {
-                        s += U[k*n + j] * U[i*n + j];
-                    }
-                    s /= U[k*n + k+1];
-
-                    for (int j = k + 1; j < n; j++) {
-                        U[i*n + j] -= s * U[k*n + j];
-                    }
-                }
-
-                // Accumulate right singular vectors
-                for (int i = 0; i < n; i++) {
-                    double s = 0.0;
-                    for (int j = k + 1; j < n; j++) {
-                        s += U[k*n + j] * VT[i*n + j];
-                    }
-                    s /= U[k*n + k+1];
-
-                    for (int j = k + 1; j < n; j++) {
-                        VT[i*n + j] -= s * U[k*n + j];
-                    }
-                }
-            }
-
-            e[k] = alpha;
-        }
-    }
-
-    // Copy bidiagonal elements to proper places
-    for (int i = 0; i < n; i++) {
-        S[i] = bidiag[i];
-    }
-
-    // Step 2: Iterative diagonalization of the bidiagonal form (QR algorithm)
-    // This is a simplified implementation for the sake of brevity
-
-    // QR iterations to diagonalize bidiagonal matrix
-    const int max_iter = 100;
-    for (int iter = 0; iter < max_iter; iter++) {
-        // Test for splitting
-        int k;
-        for (k = n - 1; k > 0; k--) {
-            if (fabs(e[k-1]) <= TOLERANCE * (fabs(S[k-1]) + fabs(S[k])))
-                e[k-1] = 0.0;
-
-            if (e[k-1] == 0.0)
-                break;
-        }
-
-        if (k == n - 1) {
-            // Singular value converged
-            continue;
-        }
-
-        // QR step
-        double c, s, f, g, h;
-
-        // Givens rotation to make element S[k] zero
-        g = S[k];
-        h = S[k+1];
-        f = ((g - h) * (g + h) + e[k] * e[k]) / (2.0 * h * g);
-        g = sqrt(f * f + 1.0);
-        if (f < 0.0) g = -g;
-        f = ((S[k] - S[k+1]) * (S[k] + S[k+1]) + h * (g - f)) / S[k];
-
-        // Next QR transformation
-        c = s = 1.0;
-
-        for (int i = k + 1; i < n; i++) {
-            g = e[i-1];
-            h = s * g;
-            g = c * g;
-
-            double z = sqrt(f * f + h * h);
-            e[i-2] = z;
-
-            c = f / z;
-            s = h / z;
-
-            f = S[i-1] * c + g * s;
-            g = -S[i-1] * s + g * c;
-            h = S[i] * s;
-            S[i] *= c;
-
-            for (int j = 0; j < n; j++) {
-                double y = VT[j*n + i-1];
-                double z = VT[j*n + i];
-                VT[j*n + i-1] = y * c + z * s;
-                VT[j*n + i] = -y * s + z * c;
-            }
-
-            z = sqrt(f * f + h * h);
-            S[i-1] = z;
-
-            if (z != 0.0) {
-                c = f / z;
-                s = h / z;
-            }
-
-            f = c * g + s * S[i];
-            S[i] = -s * g + c * S[i];
-        }
-
-        e[k-1] = 0.0;
-        e[n-2] = f;
-        S[n-1] = h;
-    }
-
-    // Ensure non-negative singular values and sort in descending order
-    for (int i = 0; i < n; i++) {
-        S[i] = fabs(S[i]);
-    }
-
-    // Sort singular values in descending order (bubble sort for simplicity)
-    for (int i = 0; i < n - 1; i++) {
-        for (int j = 0; j < n - i - 1; j++) {
-            if (S[j] < S[j + 1]) {
-                // Swap singular values
-                double temp = S[j];
-                S[j] = S[j + 1];
-                S[j + 1] = temp;
-
-                // Swap corresponding columns in VT
-                for (int k = 0; k < n; k++) {
-                    temp = VT[k*n + j];
-                    VT[k*n + j] = VT[k*n + j + 1];
-                    VT[k*n + j + 1] = temp;
-                }
-            }
-        }
-    }
-
-    // Step 3: Solve the system using the SVD components
-
-    // Original b is already transformed by householder in bidiagonalization
-    // Copy it to UT_b
-    memcpy(UT_b, b, n * sizeof(double));
-
-    // Compute x = V * S^+ * UT_b using pseudo-inverse
+    // x = V * S^+ * U^T * b, where column j of U_scaled equals sigma_j * u_j
     for (int i = 0; i < n; i++) {
         x[i] = 0.0;
-        for (int j = 0; j < n; j++) {
-            if (fabs(S[j]) > TOLERANCE) {
-                x[i] += VT[i*n + j] * (UT_b[j] / S[j]);
-            }
-        }
     }
-
-    // Compute residual if info is requested
-    if (info) {
-        info->iterations = 0; // Direct method, no iterations
-        info->error_code = result;
-
-        // Compute residual ||Ax - b||_2
-        double residual = 0.0;
-        for (int i = 0; i < n; i++) {
-            double row_sum = 0.0;
-            for (int j = 0; j < n; j++) {
-                row_sum += A[i * n + j] * x[j];
+    for (int j = 0; j < n; j++) {
+        if (S[j] > TOLERANCE) {
+            double ub = 0.0;
+            for (int k = 0; k < n; k++) {
+                ub += U_scaled[k * n + j] * b[k];
             }
-            double diff = row_sum - b[i];
-            residual += diff * diff;
+            double coeff = ub / (S[j] * S[j]);
+            for (int k = 0; k < n; k++) {
+                x[k] += V[k * n + j] * coeff;
+            }
         }
-        info->residual = sqrt(residual);
     }
 
 cleanup:
-    // Free allocated memory - check each pointer before freeing
-    if (U) free(U);
-    if (S) free(S);
-    if (VT) free(VT);
-    if (bidiag) free(bidiag);
-    if (e) free(e);
-    if (work) free(work);
-    if (UT_b) free(UT_b);
-
+    free(U_scaled);
+    free(V);
+    free(S);
+    set_info(info, sweeps, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
     return result;
 }
 
 /* Pseudoinverse Method using SVD */
 int pseudoinverse(double *A, double *b, double *x, int n, solver_info *info) {
     int result = SOLVER_SUCCESS;
-    double *U = NULL;
-    double *S = NULL;
-    double *VT = NULL;
-    double *S_inv = NULL;
-    double *A_pinv = NULL;
-    double *ATA = NULL;
-    double *V = NULL;
-    double *temp = NULL;
-    double *UT = NULL;
+    double *U_scaled = NULL;  // Columns scaled by the singular values
+    double *V = NULL;         // Right singular vectors as columns
+    double *S = NULL;         // Singular values
+    double *A_pinv = NULL;    // Moore-Penrose pseudoinverse
+    int sweeps = 0;
 
-    // Allocate memory
-    U = (double*)malloc(n * n * sizeof(double));
-    S = (double*)malloc(n * sizeof(double));
-    VT = (double*)malloc(n * n * sizeof(double));
-    S_inv = (double*)calloc(n * n, sizeof(double));
-    A_pinv = (double*)malloc(n * n * sizeof(double));
-    ATA = (double*)malloc(n * n * sizeof(double));
+    U_scaled = (double*)malloc(n * n * sizeof(double));
     V = (double*)malloc(n * n * sizeof(double));
-    temp = (double*)malloc(n * n * sizeof(double));
-    UT = (double*)malloc(n * n * sizeof(double));
-
-    // Check all memory allocations at once
-    if (!U || !S || !VT || !S_inv || !A_pinv || !ATA || !V || !temp || !UT) {
+    S = (double*)malloc(n * sizeof(double));
+    A_pinv = (double*)calloc(n * n, sizeof(double));
+    if (!U_scaled || !V || !S || !A_pinv) {
         result = SOLVER_MEMORY_ERROR;
         goto cleanup;
     }
 
-    // Copy A to U for working on
-    memcpy(U, A, n * n * sizeof(double));
-
-    // Initialize VT as identity matrix for SVD computation
-    for (int i = 0; i < n; i++) {
-        for (int j = 0; j < n; j++) {
-            VT[i * n + j] = (i == j) ? 1.0 : 0.0;
-        }
+    result = one_sided_jacobi_svd(A, n, U_scaled, V, S, &sweeps);
+    if (result != SOLVER_SUCCESS) {
+        goto cleanup;
     }
 
-    // Compute A^T * A since it's symmetric and positive semi-definite
-    for (int i = 0; i < n; i++) {
-        for (int j = 0; j < n; j++) {
-            ATA[i * n + j] = 0.0;
-            for (int k = 0; k < n; k++) {
-                ATA[i * n + j] += A[k * n + i] * A[k * n + j];
-            }
-        }
-    }
-
-    // Apply Jacobi iterations for SVD
-    const int max_iterations = 100;
-    double threshold = 1e-8;
-
-    for (int iter = 0; iter < max_iterations; iter++) {
-        double max_offdiag = 0.0;
-        int p = 0, q = 1;
-
-        // Find the largest off-diagonal element
-        for (int i = 0; i < n; i++) {
-            for (int j = i + 1; j < n; j++) {
-                double val = fabs(ATA[i * n + j]);
-                if (val > max_offdiag) {
-                    max_offdiag = val;
-                    p = i;
-                    q = j;
-                }
-            }
-        }
-
-        // Check for convergence
-        if (max_offdiag < threshold) {
-            break;
-        }
-
-        // Compute Jacobi rotation
-        double app = ATA[p * n + p];
-        double aqq = ATA[q * n + q];
-        double apq = ATA[p * n + q];
-
-        double tau = (aqq - app) / (2.0 * apq);
-        double t = 1.0 / (fabs(tau) + sqrt(1.0 + tau * tau));
-        if (tau < 0) t = -t;
-
-        double c = 1.0 / sqrt(1.0 + t * t);
-        double s = t * c;
-
-        // Update ATA
-        ATA[p * n + p] = app * c * c + aqq * s * s + 2.0 * apq * c * s;
-        ATA[q * n + q] = app * s * s + aqq * c * c - 2.0 * apq * c * s;
-        ATA[p * n + q] = ATA[q * n + p] = 0.0;
-
-        for (int i = 0; i < n; i++) {
-            if (i != p && i != q) {
-                double api = ATA[p * n + i];
-                double aqi = ATA[q * n + i];
-                ATA[p * n + i] = ATA[i * n + p] = api * c + aqi * s;
-                ATA[q * n + i] = ATA[i * n + q] = -api * s + aqi * c;
-            }
-        }
-
-        // Update VT
-        for (int i = 0; i < n; i++) {
-            double vip = VT[i * n + p];
-            double viq = VT[i * n + q];
-            VT[i * n + p] = vip * c + viq * s;
-            VT[i * n + q] = -vip * s + viq * c;
-        }
-    }
-
-    // Extract singular values
-    for (int i = 0; i < n; i++) {
-        S[i] = sqrt(fabs(ATA[i * n + i]));
-    }
-
-    // Sort singular values and corresponding vectors in descending order
-    for (int i = 0; i < n - 1; i++) {
-        int max_idx = i;
-        double max_val = S[i];
-
-        for (int j = i + 1; j < n; j++) {
-            if (S[j] > max_val) {
-                max_val = S[j];
-                max_idx = j;
-            }
-        }
-
-        if (max_idx != i) {
-            // Swap singular values
-            double temp_val = S[i];
-            S[i] = S[max_idx];
-            S[max_idx] = temp_val;
-
-            // Swap columns of VT
-            for (int j = 0; j < n; j++) {
-                temp_val = VT[j * n + i];
-                VT[j * n + i] = VT[j * n + max_idx];
-                VT[j * n + max_idx] = temp_val;
-            }
-        }
-    }
-
-    // Compute U from A, S, and VT
-    for (int i = 0; i < n; i++) {
-        for (int j = 0; j < n; j++) {
-            U[i * n + j] = 0.0;
-            if (S[j] > TOLERANCE) {
+    // A+ = sum_j (1/sigma_j) v_j u_j^T, with column j of U_scaled equal to sigma_j * u_j
+    for (int j = 0; j < n; j++) {
+        if (S[j] > TOLERANCE) {
+            double inv_sigma_sq = 1.0 / (S[j] * S[j]);
+            for (int i = 0; i < n; i++) {
+                double scaled = V[i * n + j] * inv_sigma_sq;
                 for (int k = 0; k < n; k++) {
-                    U[i * n + j] += A[i * n + k] * VT[j * n + k] / S[j];
+                    A_pinv[i * n + k] += scaled * U_scaled[k * n + j];
                 }
             }
         }
     }
 
-    // Compute pseudoinverse using SVD components: A+ = V * diag(S+) * UT
-    // First, create diag(S+) by inverting non-zero singular values
-    for (int i = 0; i < n; i++) {
-        if (fabs(S[i]) > TOLERANCE) {
-            S_inv[i * n + i] = 1.0 / S[i];
-        } else {
-            S_inv[i * n + i] = 0.0; // Zero for small singular values
-        }
-    }
-
-    // Transpose VT to get V
-    for (int i = 0; i < n; i++) {
-        for (int j = 0; j < n; j++) {
-            V[i * n + j] = VT[j * n + i];
-        }
-    }
-
-    // Compute V * diag(S+)
-    for (int i = 0; i < n; i++) {
-        for (int j = 0; j < n; j++) {
-            temp[i * n + j] = 0.0;
-            for (int k = 0; k < n; k++) {
-                temp[i * n + j] += V[i * n + k] * S_inv[k * n + j];
-            }
-        }
-    }
-
-    // Transpose U to get UT
-    for (int i = 0; i < n; i++) {
-        for (int j = 0; j < n; j++) {
-            UT[i * n + j] = U[j * n + i];
-        }
-    }
-
-    // Compute temp * UT to get A+
-    for (int i = 0; i < n; i++) {
-        for (int j = 0; j < n; j++) {
-            A_pinv[i * n + j] = 0.0;
-            for (int k = 0; k < n; k++) {
-                A_pinv[i * n + j] += temp[i * n + k] * UT[k * n + j];
-            }
-        }
-    }
-
-    // Compute solution x = A+ * b
+    // x = A+ * b
     for (int i = 0; i < n; i++) {
         x[i] = 0.0;
         for (int j = 0; j < n; j++) {
@@ -3012,36 +2431,12 @@ int pseudoinverse(double *A, double *b, double *x, int n, solver_info *info) {
         }
     }
 
-    // Calculate residual ||Ax - b|| if info is requested
-    if (info) {
-        info->iterations = 0;  // Direct method, no iterations
-
-        // Calculate residual ||Ax - b||
-        double residual = 0.0;
-        for (int i = 0; i < n; i++) {
-            double row_sum = 0.0;
-            for (int j = 0; j < n; j++) {
-                row_sum += A[i * n + j] * x[j];
-            }
-            double diff = row_sum - b[i];
-            residual += diff * diff;
-        }
-        info->residual = sqrt(residual);
-        info->error_code = result;
-    }
-
 cleanup:
-    // Clean up all allocated memory
-    free(U);
-    free(S);
-    free(VT);
-    free(S_inv);
-    free(A_pinv);
-    free(ATA);
+    free(U_scaled);
     free(V);
-    free(temp);
-    free(UT);
-
+    free(S);
+    free(A_pinv);
+    set_info(info, sweeps, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
     return result;
 }
 
@@ -3195,13 +2590,6 @@ int block_matrix(double *A, double *b, double *x, int n, solver_info *info) {
         x[block_size + i] = x2[i];
     }
 
-    // Set info if requested
-    if (info) {
-        info->iterations = 0; // Direct method, no iterations
-        info->residual = 0.0; // Exact solution (ignoring round-off errors)
-        info->error_code = SOLVER_SUCCESS;
-    }
-
 cleanup:
     // Clean up allocated memory
     free(A11);
@@ -3217,6 +2605,7 @@ cleanup:
     free(Y);
     free(col);
 
+    set_info(info, 0, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
     return result;
 }
 
@@ -3382,13 +2771,6 @@ int partitioning(double *A, double *b, double *x, int n, solver_info *info) {
         x[block_size + i] = x2[i];
     }
 
-    // Set info if requested
-    if (info) {
-        info->iterations = 0;  // Direct method has no iterations
-        info->residual = 0.0;  // Compute residual if needed
-        info->error_code = result;
-    }
-
 cleanup:
     // Clean up allocated memory - safe to free NULL pointers
     free(b1);
@@ -3409,6 +2791,7 @@ cleanup:
     #undef A21
     #undef A22
 
+    set_info(info, 0, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
     return result;
 }
 
@@ -3658,30 +3041,13 @@ int matrix_rank(double *A, double *b, double *x, int n, solver_info *info) {
         result = SOLVER_NO_SOLUTION;
     }
 
-    // Set info if requested
-    if (info) {
-        info->iterations = 0; // Direct method, no iterations
-
-        // Calculate residual ||Ax - b||
-        double residual = 0.0;
-        for (int i = 0; i < n; i++) {
-            double row_sum = 0.0;
-            for (int j = 0; j < n; j++) {
-                row_sum += A[i * n + j] * x[j];
-            }
-            double diff = row_sum - b[i];
-            residual += diff * diff;
-        }
-        info->residual = sqrt(residual);
-        info->error_code = result;
-    }
-
 cleanup:
     if (pivot_cols) free(pivot_cols);
     if (temp_matrix) free(temp_matrix);
     if (coef_matrix) free(coef_matrix);
     if (augmented) free(augmented);
 
+    set_info(info, 0, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
     return result;
 }
 
@@ -3689,6 +3055,7 @@ cleanup:
 int determinant(double *A, double *b, double *x, int n, solver_info *info) {
     // Validate input parameters
     if (!A || !b || !x || n <= 0) {
+        set_info(info, 0, NAN, SOLVER_INPUT_ERROR);
         return SOLVER_INPUT_ERROR;
     }
 
@@ -3703,6 +3070,7 @@ int determinant(double *A, double *b, double *x, int n, solver_info *info) {
         // Free any successfully allocated memory
         if (A_copy) free(A_copy);
         if (temp_matrix) free(temp_matrix);
+        set_info(info, 0, NAN, SOLVER_MEMORY_ERROR);
         return SOLVER_MEMORY_ERROR;
     }
 
@@ -3739,9 +3107,7 @@ int determinant(double *A, double *b, double *x, int n, solver_info *info) {
         // Check for singularity
         if (fabs(A_copy[k * n + k]) < TOLERANCE) {
             result = SOLVER_SINGULAR_MATRIX;
-            free(A_copy);
-            free(temp_matrix);
-            return result;
+            goto cleanup;
         }
 
         // Eliminate entries below pivot
@@ -3763,9 +3129,8 @@ int determinant(double *A, double *b, double *x, int n, solver_info *info) {
 
     // Check if matrix is singular (determinant close to zero)
     if (fabs(det_A) < TOLERANCE) {
-        free(A_copy);
-        free(temp_matrix);
-        return SOLVER_SINGULAR_MATRIX;
+        result = SOLVER_SINGULAR_MATRIX;
+        goto cleanup;
     }
 
     // Calculate each x[i] using Cramer's rule
@@ -3832,191 +3197,123 @@ int determinant(double *A, double *b, double *x, int n, solver_info *info) {
         x[i] = det_i / det_A;
     }
 
-    // Set info if requested
-    if (info) {
-        info->iterations = 0;  // Direct method has no iterations
-        info->residual = 0.0;  // Exact solution (ignoring round-off errors)
-        info->error_code = result;
-    }
-
+cleanup:
     // Free allocated memory
     free(A_copy);
     free(temp_matrix);
 
+    set_info(info, 0, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
     return result;
 }
 
 /* Eigenvalue Decomposition Method */
 int eigenvalue_decomposition(double *A, double *b, double *x, int n, solver_info *info) {
     int result = SOLVER_SUCCESS;
-    int max_iter = MAX_ITERATIONS;
-    double tol = TOLERANCE;        // Convergence tolerance
+    int sweeps = 0;
 
-    // Allocate memory for matrices and vectors needed in the computation
-    double *eigenvalues = (double*)malloc(n * sizeof(double));
-    double *eigenvectors = (double*)malloc(n * n * sizeof(double));
-    double *work_matrix = (double*)malloc(n * n * sizeof(double));
+    // Symmetric eigensolver via cyclic Jacobi rotations: A = V * diag(lambda) * V^T
+    double *M = (double*)malloc(n * n * sizeof(double));
+    double *V = (double*)malloc(n * n * sizeof(double));
     double *y = (double*)malloc(n * sizeof(double));
 
-    if (!eigenvalues || !eigenvectors || !work_matrix || !y) {
-        // Handle memory allocation failure
-        free(eigenvalues);
-        free(eigenvectors);
-        free(work_matrix);
-        free(y);
-        return SOLVER_MEMORY_ERROR;
+    if (!M || !V || !y) {
+        result = SOLVER_MEMORY_ERROR;
+        goto cleanup;
     }
 
-    // Make a copy of matrix A
-    memcpy(work_matrix, A, n * n * sizeof(double));
-
-    // Initialize eigenvectors to identity matrix
+    memcpy(M, A, n * n * sizeof(double));
     for (int i = 0; i < n; i++) {
         for (int j = 0; j < n; j++) {
-            eigenvectors[i * n + j] = (i == j) ? 1.0 : 0.0;
+            V[i * n + j] = (i == j) ? 1.0 : 0.0;
         }
     }
 
-    // Perform power iterations for each eigenvector
-    for (int k = 0; k < n; k++) {
-        // Starting vector - use basis vector
-        double *v = (double*)malloc(n * sizeof(double));
-        double *prev_v = (double*)malloc(n * sizeof(double));
-
-        if (!v || !prev_v) {
-            free(v);
-            free(prev_v);
-            result = SOLVER_MEMORY_ERROR;
-            goto cleanup;
+    const int max_sweeps = 100;
+    int converged = 0;
+    for (sweeps = 0; sweeps < max_sweeps; sweeps++) {
+        double off = 0.0;
+        for (int p = 0; p < n - 1; p++) {
+            for (int q = p + 1; q < n; q++) {
+                off += M[p * n + q] * M[p * n + q];
+            }
+        }
+        if (off < 1e-24) {
+            converged = 1;
+            break;
         }
 
-        // Initialize with kth basis vector perturbed slightly
-        for (int i = 0; i < n; i++) {
-            v[i] = (i == k) ? 1.0 : 0.0;
-            prev_v[i] = v[i];
-        }
+        for (int p = 0; p < n - 1; p++) {
+            for (int q = p + 1; q < n; q++) {
+                double apq = M[p * n + q];
+                if (apq == 0.0) {
+                    continue;
+                }
+                double app = M[p * n + p];
+                double aqq = M[q * n + q];
+                double theta = (aqq - app) / (2.0 * apq);
+                double t = (theta >= 0.0)
+                    ? 1.0 / (theta + sqrt(theta * theta + 1.0))
+                    : -1.0 / (-theta + sqrt(theta * theta + 1.0));
+                double c = 1.0 / sqrt(t * t + 1.0);
+                double s = t * c;
+                double h = t * apq;
 
-        // Deflate matrix if this is not the first eigenvector
-        if (k > 0) {
-            // Deflate using previous eigenvalues and eigenvectors
-            for (int i = 0; i < n; i++) {
-                for (int j = 0; j < n; j++) {
-                    for (int p = 0; p < k; p++) {
-                        work_matrix[i * n + j] -= eigenvalues[p] *
-                            eigenvectors[i * n + p] * eigenvectors[j * n + p];
+                M[p * n + p] = app - h;
+                M[q * n + q] = aqq + h;
+                M[p * n + q] = 0.0;
+                M[q * n + p] = 0.0;
+
+                for (int i = 0; i < n; i++) {
+                    if (i != p && i != q) {
+                        double aip = M[i * n + p];
+                        double aiq = M[i * n + q];
+                        M[i * n + p] = c * aip - s * aiq;
+                        M[p * n + i] = M[i * n + p];
+                        M[i * n + q] = s * aip + c * aiq;
+                        M[q * n + i] = M[i * n + q];
                     }
                 }
-            }
-        }
 
-        // Power iteration
-        int iter;
-        double lambda = 0.0, prev_lambda = 0.0;
-
-        for (iter = 0; iter < max_iter; iter++) {
-            // Matrix-vector multiplication: v = A*v
-            for (int i = 0; i < n; i++) {
-                double sum = 0.0;
-                for (int j = 0; j < n; j++) {
-                    sum += work_matrix[i * n + j] * v[j];
-                }
-                prev_v[i] = sum;
-            }
-
-            // Find the element with largest absolute value
-            int max_idx = 0;
-            double max_val = fabs(prev_v[0]);
-
-            for (int i = 1; i < n; i++) {
-                if (fabs(prev_v[i]) > max_val) {
-                    max_val = fabs(prev_v[i]);
-                    max_idx = i;
+                for (int i = 0; i < n; i++) {
+                    double vip = V[i * n + p];
+                    double viq = V[i * n + q];
+                    V[i * n + p] = c * vip - s * viq;
+                    V[i * n + q] = s * vip + c * viq;
                 }
             }
-
-            // No good eigenvalue found (divide by zero risk)
-            if (max_val < tol) {
-                free(v);
-                free(prev_v);
-                result = SOLVER_SINGULAR_MATRIX;
-                goto cleanup;
-            }
-
-            // Normalize vector
-            lambda = prev_v[max_idx];
-            for (int i = 0; i < n; i++) {
-                v[i] = prev_v[i] / lambda;
-            }
-
-            // Check for convergence
-            if (fabs(lambda - prev_lambda) < tol) {
-                break;
-            }
-
-            prev_lambda = lambda;
-        }
-
-        // Store eigenvalue and eigenvector
-        eigenvalues[k] = lambda;
-        for (int i = 0; i < n; i++) {
-            eigenvectors[i * n + k] = v[i];
-        }
-
-        free(v);
-        free(prev_v);
-    }
-
-    // Solve the system Ax = b using the eigenvalue decomposition
-    // Compute y = V^T * b
-    for (int i = 0; i < n; i++) {
-        y[i] = 0.0;
-        for (int j = 0; j < n; j++) {
-            y[i] += eigenvectors[j * n + i] * b[j];
         }
     }
 
-    // Solve Dx = y, where D is diagonal matrix of eigenvalues
+    if (!converged) {
+        result = SOLVER_NOT_CONVERGED;
+        goto cleanup;
+    }
+
+    // x = sum_i q_i (q_i^T b) / lambda_i, with q_i the i-th column of V and lambda_i = M[i][i]
     for (int i = 0; i < n; i++) {
-        if (fabs(eigenvalues[i]) < tol) {
+        if (fabs(M[i * n + i]) < TOLERANCE) {
             result = SOLVER_SINGULAR_MATRIX;
             goto cleanup;
         }
-        y[i] /= eigenvalues[i];
-    }
-
-    // Compute x = V * y
-    for (int i = 0; i < n; i++) {
-        x[i] = 0.0;
-        for (int j = 0; j < n; j++) {
-            x[i] += eigenvectors[i * n + j] * y[j];
+        double dot = 0.0;
+        for (int k = 0; k < n; k++) {
+            dot += V[k * n + i] * b[k];
         }
+        y[i] = dot / M[i * n + i];
     }
 
-    // Set info if requested
-    if (info) {
-        info->iterations = max_iter;
-
-        // Calculate residual ||Ax - b||
-        double residual = 0.0;
+    for (int k = 0; k < n; k++) {
+        x[k] = 0.0;
         for (int i = 0; i < n; i++) {
-            double row_sum = 0.0;
-            for (int j = 0; j < n; j++) {
-                row_sum += A[i * n + j] * x[j];
-            }
-            row_sum -= b[i];
-            residual += row_sum * row_sum;
+            x[k] += V[k * n + i] * y[i];
         }
-        info->residual = sqrt(residual);
-        info->error_code = result;
     }
 
 cleanup:
-    // Clean up allocated memory
-    free(eigenvalues);
-    free(eigenvectors);
-    free(work_matrix);
+    free(M);
+    free(V);
     free(y);
-
+    set_info(info, sweeps, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
     return result;
 }
 
@@ -4048,7 +3345,7 @@ int solve_linear_system(double *A, double *b, double *x, int n,
     } else if (strcmp(method, "qr_decomposition") == 0) {
         return qr_decomposition(A, b, x, n, info);
     } else if (strcmp(method, "matrix_inversion") == 0) {
-    return matrix_inversion(A, b, x, n, info);
+        return matrix_inversion(A, b, x, n, info);
     } else if (strcmp(method, "cramers_rule") == 0) {
         return cramers_rule(A, b, x, n, info);
     } else if (strcmp(method, "row_echelon") == 0) {
@@ -4065,11 +3362,37 @@ int solve_linear_system(double *A, double *b, double *x, int n,
         return sor(A, b, x, n, info);
     } else if (strcmp(method, "conjugate_gradient") == 0) {
         return conjugate_gradient(A, b, x, n, info);
+    } else if (strcmp(method, "gradient_descent") == 0) {
+        return gradient_descent(A, b, x, n, info);
+    } else if (strcmp(method, "minres") == 0) {
+        return minres(A, b, x, n, info);
+    } else if (strcmp(method, "gmres") == 0) {
+        return gmres(A, b, x, n, info);
+    } else if (strcmp(method, "bicg") == 0) {
+        return bicg(A, b, x, n, info);
+    } else if (strcmp(method, "iterative_refinement") == 0) {
+        return iterative_refinement(A, b, x, n, info);
+    } else if (strcmp(method, "normal_equations") == 0) {
+        return normal_equations(A, b, x, n, info);
+    } else if (strcmp(method, "orthogonal_projection") == 0) {
+        return orthogonal_projection(A, b, x, n, info);
+    } else if (strcmp(method, "svd") == 0) {
+        return svd(A, b, x, n, info);
+    } else if (strcmp(method, "pseudoinverse") == 0) {
+        return pseudoinverse(A, b, x, n, info);
+    } else if (strcmp(method, "block_matrix") == 0) {
+        return block_matrix(A, b, x, n, info);
+    } else if (strcmp(method, "partitioning") == 0) {
+        return partitioning(A, b, x, n, info);
+    } else if (strcmp(method, "matrix_rank") == 0) {
+        return matrix_rank(A, b, x, n, info);
+    } else if (strcmp(method, "determinant") == 0) {
+        return determinant(A, b, x, n, info);
+    } else if (strcmp(method, "eigenvalue_decomposition") == 0) {
+        return eigenvalue_decomposition(A, b, x, n, info);
     }
 
     // If method is not recognized, return an error code
-    if (info) {
-        info->error_code = -1; // Indicate an unrecognized method
-    }
-    return -1; // Return a non-zero value to indicate failure
+    set_info(info, 0, NAN, SOLVER_INPUT_ERROR);
+    return SOLVER_INPUT_ERROR;
 }
