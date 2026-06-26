@@ -13,6 +13,12 @@ def test_recommend_returns_known_solver():
     assert recommend_solver(A) in list_available_solvers()
 
 
+def test_recommend_accepts_list_input():
+    """A Python list must diagnose the same as its ndarray equivalent."""
+    data = [[1.0, 2.0, 3.0], [2.0, 4.0, 6.0], [1.0, 1.0, 1.0]]  # rank 2
+    assert recommend_solver(data) == recommend_solver(np.array(data)) == "svd"
+
+
 def test_recommend_cholesky_for_spd():
     assert recommend_solver(spd_matrix(6)) == "cholesky"
 

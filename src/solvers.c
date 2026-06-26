@@ -1950,9 +1950,9 @@ int bicg(double *A, double *b, double *x, int n, solver_info *info) {
     Ap = memory_block + 4 * n;
     temp = memory_block + 5 * n;
 
-    // Initialize solution vector if not provided
+    // Always start from a zero initial guess (do not trust the output buffer).
     for (int i = 0; i < n; i++) {
-        if (isnan(x[i])) x[i] = 0.0;
+        x[i] = 0.0;
     }
 
     // Calculate initial residual r = b - A*x
@@ -3392,7 +3392,9 @@ int solve_linear_system(double *A, double *b, double *x, int n,
         }
         bnorm = sqrt(bnorm);
         double res = residual_norm(A, b, x, n);
-        if (res > 1e-6 * (bnorm + 1.0)) {
+        // A non-finite residual (NaN/overflow) or one that is too large means the
+        // reported "success" does not actually solve the system.
+        if (!isfinite(res) || res > 1e-6 * (bnorm + 1.0)) {
             set_info(info, info ? info->iterations : 0, res, SOLVER_SINGULAR_MATRIX);
             return SOLVER_SINGULAR_MATRIX;
         }

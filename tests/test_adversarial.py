@@ -117,3 +117,17 @@ def test_method_wrong_type_raises():
     b = np.array([5.0, 4.0])
     with pytest.raises(InvalidParameterError):
         solve_system(A, b, method=123)
+
+
+@pytest.mark.parametrize(
+    "method", ["qr_decomposition", "gradient_descent", "bicg", "lu_decomposition"]
+)
+def test_overflow_inputs_never_return_nan_success(method):
+    """Finite but overflow-prone inputs must never yield a NaN 'success'."""
+    A = 1e154 * np.eye(2)
+    b = 1e154 * np.ones(2)
+    try:
+        x = solve_system(A, b, method=method)
+    except MatrixCoreError:
+        return  # rejecting is acceptable
+    assert np.all(np.isfinite(x)), f"{method} returned non-finite x with success"

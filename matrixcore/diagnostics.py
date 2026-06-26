@@ -69,6 +69,8 @@ def _matrix_diagnostics(A):
     }
 
     try:
+        if not hasattr(A, "shape"):  # e.g. a Python list; keep sparse matrices as-is
+            A = np.asarray(A, dtype=np.float64)
         m, n = A.shape
         diagnostics["m"] = m
         diagnostics["n"] = n
