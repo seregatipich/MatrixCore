@@ -942,7 +942,10 @@ int reduced_row_echelon(double *A, double *b, double *x, int n, solver_info *inf
 
     // Allocate memory for an augmented matrix [A|b]
     double *aug = (double*)malloc(n * (n + 1) * sizeof(double));
-    if (!aug) return SOLVER_MEMORY_ERROR;
+    if (!aug) {
+        set_info(info, 0, NAN, SOLVER_MEMORY_ERROR);
+        return SOLVER_MEMORY_ERROR;
+    }
 
     // Create augmented matrix
     for (int i = 0; i < n; i++) {
@@ -954,6 +957,7 @@ int reduced_row_echelon(double *A, double *b, double *x, int n, solver_info *inf
 
     // Forward phase: Convert to row echelon form
     int lead = 0;
+    int rank = 0;
     for (int r = 0; r < n; r++) {
         if (lead >= n) break;
 
@@ -1000,7 +1004,8 @@ int reduced_row_echelon(double *A, double *b, double *x, int n, solver_info *inf
             }
         }
 
-        lead++; // Move to the next column
+        rank++;  // Recorded a pivot in this column
+        lead++;  // Move to the next column
     }
 
     // Check for consistency (zero rows with non-zero right side)
@@ -1016,6 +1021,13 @@ int reduced_row_echelon(double *A, double *b, double *x, int n, solver_info *inf
             result = SOLVER_INCONSISTENT_SYSTEM;
             goto cleanup;
         }
+    }
+
+    // A rank-deficient coefficient matrix has no unique solution; the row-index
+    // extraction below would otherwise emit a bogus vector for skipped columns.
+    if (rank < n) {
+        result = SOLVER_SINGULAR_MATRIX;
+        goto cleanup;
     }
 
     // Extract solution
@@ -1409,9 +1421,10 @@ int conjugate_gradient(double *A, double *b, double *x, int n, solver_info *info
             p_dot_Ap += p[i] * Ap[i];
         }
 
-        // Genuine breakdown only; near convergence p_dot_Ap is small but positive.
-        if (fabs(p_dot_Ap) < 1e-30) {
-            result = SOLVER_NOT_CONVERGED;
+        // Convergence is checked first, so for an SPD matrix p^T A p > 0 here;
+        // a non-positive value means A is not symmetric positive definite.
+        if (p_dot_Ap <= 0.0) {
+            result = SOLVER_NOT_SPD_MATRIX;
             iterations_done = iter + 1;
             goto cleanup;
         }
@@ -1515,8 +1528,10 @@ int gradient_descent(double *A, double *b, double *x, int n, solver_info *info) 
             r_dot_Ar += r[i] * Ar[i];
         }
 
-        if (fabs(r_dot_Ar) < 1e-30) {
-            result = SOLVER_NO_CONVERGENCE;
+        // Convergence is checked first, so for an SPD matrix r^T A r > 0 here;
+        // a non-positive value means A is not symmetric positive definite.
+        if (r_dot_Ar <= 0.0) {
+            result = SOLVER_NOT_SPD_MATRIX;
             goto cleanup;
         }
 
@@ -1548,6 +1563,16 @@ cleanup:
 int minres(double *A, double *b, double *x, int n, solver_info *info) {
     int result = SOLVER_SUCCESS;
     int steps = 0;
+
+    // The symmetric Lanczos recurrence below is only valid for symmetric A.
+    for (int i = 0; i < n; i++) {
+        for (int j = 0; j < i; j++) {
+            if (fabs(A[i * n + j] - A[j * n + i]) > TOLERANCE) {
+                set_info(info, 0, NAN, SOLVER_NOT_SPD_MATRIX);
+                return SOLVER_NOT_SPD_MATRIX;
+            }
+        }
+    }
 
     // Lanczos tridiagonalization followed by a Givens least-squares solve, which
     // minimizes ||b - A x|| over the Krylov subspace (genuine minimal residual).
@@ -2190,6 +2215,11 @@ int iterative_refinement(double *A, double *b, double *x, int n, solver_info *in
         }
     }
 
+    // Exhausting the iteration budget without meeting tolerance is not success.
+    if (result == SOLVER_SUCCESS && iterations >= MAX_ITERATIONS && residual_norm >= TOLERANCE) {
+        result = SOLVER_NOT_CONVERGED;
+    }
+
 cleanup:
     // Clean up allocated memory
     if (r) free(r);
@@ -2511,6 +2541,13 @@ int block_matrix(double *A, double *b, double *x, int n, solver_info *info) {
 
     // Solve A11 * y1 = b1 for y1 (using a direct method)
     result = gaussian_elimination(A11, b1, x1, block_size, NULL);
+    if (result == SOLVER_SINGULAR_MATRIX) {
+        // A singular leading block does not imply a singular full system; the
+        // Schur-complement scheme cannot proceed, so solve the whole system
+        // directly with partial pivoting.
+        result = gaussian_elimination(A, b, x, n, NULL);
+        goto cleanup;
+    }
     if (result != SOLVER_SUCCESS) {
         goto cleanup;
     }
@@ -2688,6 +2725,12 @@ int partitioning(double *A, double *b, double *x, int n, solver_info *info) {
 
         // Solve A11 * result_col = A12_col
         result = gaussian_elimination(A11_matrix, A12_col, result_col, block_size, NULL);
+        if (result == SOLVER_SINGULAR_MATRIX) {
+            // A singular leading block does not imply a singular full system;
+            // fall back to solving the whole system with partial pivoting.
+            result = gaussian_elimination(A, b, x, n, NULL);
+            goto cleanup;
+        }
         if (result != SOLVER_SUCCESS) {
             goto cleanup;
         }
@@ -3208,6 +3251,17 @@ cleanup:
 int eigenvalue_decomposition(double *A, double *b, double *x, int n, solver_info *info) {
     int result = SOLVER_SUCCESS;
     int sweeps = 0;
+
+    // Cyclic Jacobi assumes a symmetric A; reject anything else rather than
+    // silently returning a wrong spectrum.
+    for (int i = 0; i < n; i++) {
+        for (int j = 0; j < i; j++) {
+            if (fabs(A[i * n + j] - A[j * n + i]) > TOLERANCE) {
+                set_info(info, 0, NAN, SOLVER_NOT_SPD_MATRIX);
+                return SOLVER_NOT_SPD_MATRIX;
+            }
+        }
+    }
 
     // Symmetric eigensolver via cyclic Jacobi rotations: A = V * diag(lambda) * V^T
     double *M = (double*)malloc(n * n * sizeof(double));

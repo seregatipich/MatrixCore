@@ -6,7 +6,7 @@ import numpy as np
 
 cimport numpy as np
 
-from matrixcore.exceptions import error_for_code
+from matrixcore.exceptions import InvalidParameterError, error_for_code
 
 np.import_array()
 
@@ -51,7 +51,7 @@ cdef extern from "solvers.h":
     int eigenvalue_decomposition(double *A, double *b, double *x, int n, solver_info *info)
 
     # Import the main solver function
-    int solve_linear_system(double *A, double *b, double *x, int n, const char *method, solver_info *info)
+    int solve_linear_system(double *A, double *b, double *x, int n, const char *method, solver_info *info) nogil
 
 def _as_dense_f64(array, name):
     """Coerce input to a contiguous float64 numpy array, densifying sparse input."""
@@ -99,16 +99,28 @@ def solve_system(A, b, method='gaussian_elimination', return_info=False):
         raise ValueError(
             f"Dimension mismatch: A is {A_c.shape[0]}x{A_c.shape[1]} but b has length {b_c.shape[0]}"
         )
+    if A_c.shape[0] == 0:
+        raise ValueError("Matrix A must have at least one row")
+    if not np.isfinite(A_c).all() or not np.isfinite(b_c).all():
+        raise InvalidParameterError("inputs must contain only finite values (no NaN or inf)")
 
     cdef int n = A_c.shape[0]
     cdef np.ndarray[double, ndim=1, mode="c"] x = np.zeros(n, dtype=np.float64)
     cdef solver_info info
     cdef bytes method_bytes = method.encode('utf-8')
+    cdef const char* method_ptr = method_bytes
+    cdef double* A_ptr = &A_c[0, 0]
+    cdef double* b_ptr = &b_c[0]
+    cdef double* x_ptr = &x[0]
+    cdef int result
 
-    cdef int result = solve_linear_system(&A_c[0, 0], &b_c[0], &x[0], n, method_bytes, &info)
+    with nogil:
+        result = solve_linear_system(A_ptr, b_ptr, x_ptr, n, method_ptr, &info)
 
+    # The C return value is the authoritative error code (info may be unset on
+    # some failure paths), so map exceptions from it rather than info.error_code.
     if result != 0:
-        raise error_for_code(info.error_code, method=method)
+        raise error_for_code(result, method=method)
 
     if return_info:
         info_dict = {
