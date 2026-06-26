@@ -1,3 +1,69 @@
-   [build-system]
-   requires = ["setuptools>=42", "wheel", "Cython==3.1.0", "numpy==2.2.5"]
-   build-backend = "setuptools.build_meta"
+[build-system]
+requires = ["setuptools>=64", "wheel", "Cython>=3.0", "numpy>=2.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "matrixcore"
+version = "0.1.0"
+description = "Educational library of 30 hand-written C solvers for dense linear systems Ax = b, exposed through a Cython/NumPy interface."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Sergei Poluektov", email = "poluektovsergei345@gmail.com" }]
+keywords = ["linear algebra", "linear systems", "solvers", "numerical methods", "cython", "education"]
+dependencies = ["numpy>=2.0", "scipy>=1.10"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Education",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: C",
+    "Programming Language :: Cython",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Education",
+    "Topic :: Scientific/Engineering :: Mathematics",
+]
+
+[project.urls]
+Homepage = "https://github.com/seregatipich/MatrixCore"
+Repository = "https://github.com/seregatipich/MatrixCore"
+Issues = "https://github.com/seregatipich/MatrixCore/issues"
+
+[project.optional-dependencies]
+test = ["pytest>=7", "pytest-cov", "hypothesis"]
+dev = ["ruff", "mypy", "pre-commit"]
+docs = ["sphinx", "furo"]
+
+[tool.setuptools]
+packages = ["matrixcore", "matrixcore.io"]
+
+[tool.setuptools.package-data]
+matrixcore = ["py.typed", "*.pyi"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+
+[tool.ruff.lint]
+extend-select = ["I", "UP", "B", "C4", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["matrixcore"]
+
+[tool.coverage.report]
+show_missing = true
+
+[tool.mypy]
+python_version = "3.9"
+warn_unused_ignores = true
+ignore_missing_imports = true
