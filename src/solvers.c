@@ -1389,7 +1389,12 @@ int conjugate_gradient(double *A, double *b, double *x, int n, solver_info *info
         r_dot_r += r[i] * r[i];
     }
 
-    for (iter = 0; iter < n && iter < MAX_ITERATIONS; iter++) {
+    if (sqrt(r_dot_r) < TOLERANCE) {
+        result = SOLVER_SUCCESS;
+        goto cleanup;
+    }
+
+    for (iter = 0; iter < MAX_ITERATIONS; iter++) {
         // Calculate Ap
         for (int i = 0; i < n; i++) {
             Ap[i] = 0.0;
@@ -1404,7 +1409,8 @@ int conjugate_gradient(double *A, double *b, double *x, int n, solver_info *info
             p_dot_Ap += p[i] * Ap[i];
         }
 
-        if (fabs(p_dot_Ap) < TOLERANCE) {
+        // Genuine breakdown only; near convergence p_dot_Ap is small but positive.
+        if (fabs(p_dot_Ap) < 1e-30) {
             result = SOLVER_NOT_CONVERGED;
             iterations_done = iter + 1;
             goto cleanup;
@@ -1459,83 +1465,75 @@ cleanup:
 int gradient_descent(double *A, double *b, double *x, int n, solver_info *info) {
     int iterations = 0;
     double residual_norm = 0.0;
-    double alpha = 0.01;  // Learning rate
-    double *residual = NULL;
-    double *gradient = NULL;
-    double *Ax = NULL;
+    double *r = NULL;
+    double *Ar = NULL;
     int result = SOLVER_SUCCESS;
 
-    // Allocate memory for temporary vectors
-    residual = (double*)malloc(n * sizeof(double));
-    if (!residual) {
-        result = SOLVER_MEMORY_ERROR;
-        goto cleanup;
-    }
-
-    gradient = (double*)malloc(n * sizeof(double));
-    if (!gradient) {
-        result = SOLVER_MEMORY_ERROR;
-        goto cleanup;
-    }
-
-    Ax = (double*)malloc(n * sizeof(double));
-    if (!Ax) {
-        result = SOLVER_MEMORY_ERROR;
-        goto cleanup;
-    }
-
-    // Initialize x with zeros
+    // Steepest descent for SPD systems requires a symmetric matrix.
     for (int i = 0; i < n; i++) {
-        x[i] = 0.0;
-    }
-
-    // Main gradient descent loop
-    for (iterations = 0; iterations < MAX_ITERATIONS; iterations++) {
-        // Compute Ax
-        for (int i = 0; i < n; i++) {
-            Ax[i] = 0.0;
-            for (int j = 0; j < n; j++) {
-                Ax[i] += A[i * n + j] * x[j];
+        for (int j = 0; j < i; j++) {
+            if (fabs(A[i * n + j] - A[j * n + i]) > TOLERANCE) {
+                result = SOLVER_NOT_SPD_MATRIX;
+                goto cleanup;
             }
         }
+    }
 
-        // Compute residual: r = b - Ax
-        residual_norm = 0.0;
+    r = (double*)malloc(n * sizeof(double));
+    Ar = (double*)malloc(n * sizeof(double));
+    if (!r || !Ar) {
+        result = SOLVER_MEMORY_ERROR;
+        goto cleanup;
+    }
+
+    // Initialize x with zeros; residual r = b - Ax = b.
+    for (int i = 0; i < n; i++) {
+        x[i] = 0.0;
+        r[i] = b[i];
+    }
+
+    // Steepest descent with exact line search: alpha = (r.r) / (r.A.r).
+    for (iterations = 0; iterations < MAX_ITERATIONS; iterations++) {
+        double r_dot_r = 0.0;
         for (int i = 0; i < n; i++) {
-            residual[i] = b[i] - Ax[i];
-            residual_norm += residual[i] * residual[i];
+            r_dot_r += r[i] * r[i];
         }
-        residual_norm = sqrt(residual_norm);
-
-        // Check convergence
+        residual_norm = sqrt(r_dot_r);
         if (residual_norm < TOLERANCE) {
             break;
         }
 
-        // Compute gradient: g = -2A^T(b - Ax)
         for (int i = 0; i < n; i++) {
-            gradient[i] = 0.0;
+            Ar[i] = 0.0;
             for (int j = 0; j < n; j++) {
-                gradient[i] -= 2.0 * A[j * n + i] * residual[j];
+                Ar[i] += A[i * n + j] * r[j];
             }
         }
 
-        // Update x: x = x - alpha * gradient
+        double r_dot_Ar = 0.0;
         for (int i = 0; i < n; i++) {
-            x[i] -= alpha * gradient[i];
+            r_dot_Ar += r[i] * Ar[i];
+        }
+
+        if (fabs(r_dot_Ar) < 1e-30) {
+            result = SOLVER_NO_CONVERGENCE;
+            goto cleanup;
+        }
+
+        double alpha = r_dot_r / r_dot_Ar;
+        for (int i = 0; i < n; i++) {
+            x[i] += alpha * r[i];
+            r[i] -= alpha * Ar[i];
         }
     }
 
-    // Update result if no convergence
-    if (iterations >= MAX_ITERATIONS) {
+    if (iterations >= MAX_ITERATIONS && residual_norm >= TOLERANCE) {
         result = SOLVER_NO_CONVERGENCE;
     }
 
 cleanup:
-    // Clean up allocated memory safely
-    if (residual) free(residual);
-    if (gradient) free(gradient);
-    if (Ax) free(Ax);
+    free(r);
+    free(Ar);
 
     set_info(info, iterations, result == SOLVER_SUCCESS ? residual_norm : NAN, result);
     return result;

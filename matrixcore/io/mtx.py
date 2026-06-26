@@ -40,7 +40,20 @@ def read_matrix_market(file_path):
                 stripped = line.strip()
                 if stripped and not stripped.startswith("%"):
                     values.append(float(stripped))
-            matrix = np.array(values, dtype=np.float64).reshape((rows, cols), order="F")
+            if symmetry == "general":
+                matrix = np.array(values, dtype=np.float64).reshape((rows, cols), order="F")
+            else:
+                # symmetric/skew-symmetric arrays store the packed lower triangle,
+                # column by column.
+                sign = 1.0 if symmetry == "symmetric" else -1.0
+                index = 0
+                for j in range(cols):
+                    for i in range(j, rows):
+                        value = values[index]
+                        index += 1
+                        matrix[i, j] = value
+                        if i != j:
+                            matrix[j, i] = sign * value
         elif layout == "coordinate":
             nnz = int(dims[2])
             for _ in range(nnz):
@@ -55,10 +68,6 @@ def read_matrix_market(file_path):
         else:
             raise ValueError(f"Unsupported Matrix Market layout: {layout!r}")
 
-    if layout == "array" and symmetry in ("symmetric", "skew-symmetric"):
-        sign = 1.0 if symmetry == "symmetric" else -1.0
-        lower = np.tril(matrix, -1)
-        matrix = matrix + sign * lower.T
     return matrix
 
 
