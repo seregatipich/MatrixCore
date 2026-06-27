@@ -1,4 +1,4 @@
-"""MatrixCore: 30 hand-written C solvers for dense linear systems Ax = b.
+"""MatrixCore: 50 hand-written C solvers for dense linear systems Ax = b.
 
 The numerical core is implemented from scratch in C (``src/solvers.c``) and
 exposed through a Cython/NumPy interface. NumPy and SciPy are used only for
