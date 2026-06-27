@@ -22,7 +22,7 @@ x, info = solve_system(A, b, method="conjugate_gradient", return_info=True)
 from matrixcore import recommend_solver, list_available_solvers
 
 recommend_solver(A)        # heuristic choice from matrix diagnostics
-list_available_solvers()   # all 30 method names
+list_available_solvers()   # all 50 method names
 ```
 
 Some methods require structure: `cholesky`, `conjugate_gradient`,

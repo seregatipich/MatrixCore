@@ -57,6 +57,26 @@ int partitioning(double *A, double *b, double *x, int n, solver_info *info);
 int matrix_rank(double *A, double *b, double *x, int n, solver_info *info);
 int determinant(double *A, double *b, double *x, int n, solver_info *info);
 int eigenvalue_decomposition(double *A, double *b, double *x, int n, solver_info *info);
+int crout(double *A, double *b, double *x, int n, solver_info *info);
+int ldlt(double *A, double *b, double *x, int n, solver_info *info);
+int thomas(double *A, double *b, double *x, int n, solver_info *info);
+int givens_qr(double *A, double *b, double *x, int n, solver_info *info);
+int modified_gram_schmidt(double *A, double *b, double *x, int n, solver_info *info);
+int classical_gram_schmidt(double *A, double *b, double *x, int n, solver_info *info);
+int lq_decomposition(double *A, double *b, double *x, int n, solver_info *info);
+int richardson(double *A, double *b, double *x, int n, solver_info *info);
+int ssor(double *A, double *b, double *x, int n, solver_info *info);
+int bicgstab(double *A, double *b, double *x, int n, solver_info *info);
+int cgs(double *A, double *b, double *x, int n, solver_info *info);
+int tfqmr(double *A, double *b, double *x, int n, solver_info *info);
+int qmr(double *A, double *b, double *x, int n, solver_info *info);
+int gcr(double *A, double *b, double *x, int n, solver_info *info);
+int lsqr(double *A, double *b, double *x, int n, solver_info *info);
+int cgnr(double *A, double *b, double *x, int n, solver_info *info);
+int preconditioned_conjugate_gradient(double *A, double *b, double *x, int n, solver_info *info);
+int conjugate_residual(double *A, double *b, double *x, int n, solver_info *info);
+int symmlq(double *A, double *b, double *x, int n, solver_info *info);
+int chebyshev(double *A, double *b, double *x, int n, solver_info *info);
 
 /* Main solver function that dispatches to the appropriate method */
 int solve_linear_system(double *A, double *b, double *x, int n, const char *method, solver_info *info);

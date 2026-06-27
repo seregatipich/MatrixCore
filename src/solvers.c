@@ -3291,6 +3291,2357 @@ cleanup:
     return result;
 }
 
+/* Crout LU Decomposition */
+int crout(double *A, double *b, double *x, int n, solver_info *info) {
+    // Crout factorization: L lower-triangular (incl. diagonal), U unit upper-triangular.
+    double *L = NULL;
+    double *U = NULL;
+    double *y = NULL;
+    int result = SOLVER_SUCCESS;
+
+    L = (double*)malloc(n * n * sizeof(double));
+    U = (double*)malloc(n * n * sizeof(double));
+    y = (double*)malloc(n * sizeof(double));
+
+    if (!L || !U || !y) {
+        result = SOLVER_MEMORY_ERROR;
+        goto cleanup;
+    }
+
+    for (int i = 0; i < n * n; i++) {
+        L[i] = 0.0;
+        U[i] = 0.0;
+    }
+
+    for (int j = 0; j < n; j++) {
+        for (int i = j; i < n; i++) {
+            double sum = A[i * n + j];
+            for (int k = 0; k < j; k++) {
+                sum -= L[i * n + k] * U[k * n + j];
+            }
+            L[i * n + j] = sum;
+        }
+
+        if (fabs(L[j * n + j]) < TOLERANCE) {
+            result = SOLVER_SINGULAR_MATRIX;
+            goto cleanup;
+        }
+
+        for (int i = j + 1; i < n; i++) {
+            double sum = A[j * n + i];
+            for (int k = 0; k < j; k++) {
+                sum -= L[j * n + k] * U[k * n + i];
+            }
+            U[j * n + i] = sum / L[j * n + j];
+        }
+        U[j * n + j] = 1.0;
+    }
+
+    for (int i = 0; i < n; i++) {
+        double sum = b[i];
+        for (int k = 0; k < i; k++) {
+            sum -= L[i * n + k] * y[k];
+        }
+        y[i] = sum / L[i * n + i];
+    }
+
+    for (int i = n - 1; i >= 0; i--) {
+        double sum = y[i];
+        for (int k = i + 1; k < n; k++) {
+            sum -= U[i * n + k] * x[k];
+        }
+        x[i] = sum;
+    }
+
+cleanup:
+    free(L);
+    free(U);
+    free(y);
+
+    set_info(info, 0, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
+    return result;
+}
+
+/* LDL^T Decomposition */
+int ldlt(double *A, double *b, double *x, int n, solver_info *info) {
+    int result = SOLVER_SUCCESS;
+    double *L = NULL;
+    double *D = NULL;
+    double *z = NULL;
+    double *y = NULL;
+
+    // Check if matrix is symmetric
+    for (int i = 0; i < n; i++) {
+        for (int j = 0; j < i; j++) {
+            if (fabs(A[i * n + j] - A[j * n + i]) > TOLERANCE) {
+                result = SOLVER_NOT_SPD_MATRIX;
+                goto cleanup;
+            }
+        }
+    }
+
+    // Allocate memory for factors and temporary vectors
+    L = (double*)calloc(n * n, sizeof(double));
+    D = (double*)malloc(n * sizeof(double));
+    z = (double*)malloc(n * sizeof(double));
+    y = (double*)malloc(n * sizeof(double));
+
+    if (!L || !D || !z || !y) {
+        result = SOLVER_MEMORY_ERROR;
+        goto cleanup;
+    }
+
+    // LDL^T decomposition: A = L * D * L^T (L unit lower triangular)
+    for (int j = 0; j < n; j++) {
+        double diagonal = A[j * n + j];
+        for (int k = 0; k < j; k++) {
+            diagonal -= L[j * n + k] * L[j * n + k] * D[k];
+        }
+
+        if (fabs(diagonal) < TOLERANCE) {
+            result = SOLVER_SINGULAR_MATRIX;
+            goto cleanup;
+        }
+
+        D[j] = diagonal;
+        L[j * n + j] = 1.0;
+
+        for (int i = j + 1; i < n; i++) {
+            double sum = A[i * n + j];
+            for (int k = 0; k < j; k++) {
+                sum -= L[i * n + k] * L[j * n + k] * D[k];
+            }
+            L[i * n + j] = sum / D[j];
+        }
+    }
+
+    // Forward solve L z = b (unit diagonal)
+    for (int i = 0; i < n; i++) {
+        double sum = b[i];
+        for (int k = 0; k < i; k++) {
+            sum -= L[i * n + k] * z[k];
+        }
+        z[i] = sum;
+    }
+
+    // Diagonal solve D y = z
+    for (int i = 0; i < n; i++) {
+        y[i] = z[i] / D[i];
+    }
+
+    // Back solve L^T x = y (unit diagonal)
+    for (int i = n - 1; i >= 0; i--) {
+        double sum = y[i];
+        for (int k = i + 1; k < n; k++) {
+            sum -= L[k * n + i] * x[k];
+        }
+        x[i] = sum;
+    }
+
+cleanup:
+    // Clean up all allocated memory
+    free(L);
+    free(D);
+    free(z);
+    free(y);
+
+    set_info(info, 0, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
+    return result;
+}
+
+/* Thomas Algorithm (tridiagonal) */
+int thomas(double *A, double *b, double *x, int n, solver_info *info) {
+    int result = SOLVER_SUCCESS;
+    double *cp = NULL;
+    double *fp = NULL;
+
+    if (n == 1) {
+        if (fabs(A[0]) < TOLERANCE) {
+            result = SOLVER_SINGULAR_MATRIX;
+            goto cleanup;
+        }
+        x[0] = b[0] / A[0];
+        goto cleanup;
+    }
+
+    cp = (double *)malloc(n * sizeof(double));
+    fp = (double *)malloc(n * sizeof(double));
+    if (cp == NULL || fp == NULL) {
+        result = SOLVER_MEMORY_ERROR;
+        goto cleanup;
+    }
+
+    if (fabs(A[0]) < TOLERANCE) {
+        result = SOLVER_SINGULAR_MATRIX;
+        goto cleanup;
+    }
+    cp[0] = A[1] / A[0];
+    fp[0] = b[0] / A[0];
+
+    for (int i = 1; i < n; i++) {
+        double sub = A[i * n + (i - 1)];
+        double diag = A[i * n + i];
+        double m = diag - sub * cp[i - 1];
+        if (fabs(m) < TOLERANCE) {
+            result = SOLVER_SINGULAR_MATRIX;
+            goto cleanup;
+        }
+        double super = (i <= n - 2) ? A[i * n + (i + 1)] : 0.0;
+        cp[i] = super / m;
+        fp[i] = (b[i] - sub * fp[i - 1]) / m;
+    }
+
+    x[n - 1] = fp[n - 1];
+    for (int i = n - 2; i >= 0; i--) {
+        x[i] = fp[i] - cp[i] * x[i + 1];
+    }
+
+cleanup:
+    free(cp);
+    free(fp);
+    set_info(info, 0, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
+    return result;
+}
+
+/* QR Decomposition via Givens Rotations */
+int givens_qr(double *A, double *b, double *x, int n, solver_info *info) {
+    // Work buffers: R starts as a copy of A, qb starts as a copy of b
+    double *R = (double*)malloc(n * n * sizeof(double));
+    double *qb = (double*)malloc(n * sizeof(double));
+    int result = SOLVER_SUCCESS;
+
+    if (!R || !qb) {
+        result = SOLVER_MEMORY_ERROR;
+        goto cleanup;
+    }
+
+    memcpy(R, A, n * n * sizeof(double));
+    memcpy(qb, b, n * sizeof(double));
+
+    for (int i = 0; i < n; i++) {
+        x[i] = 0.0;
+    }
+
+    // Triangularize R with Givens rotations, applying each rotation to qb as well
+    for (int k = 0; k < n; k++) {
+        for (int i = k + 1; i < n; i++) {
+            if (R[i * n + k] == 0.0) {
+                continue;
+            }
+
+            double r = hypot(R[k * n + k], R[i * n + k]);
+            double c = R[k * n + k] / r;
+            double s = R[i * n + k] / r;
+
+            for (int j = k; j < n; j++) {
+                double t = c * R[k * n + j] + s * R[i * n + j];
+                R[i * n + j] = -s * R[k * n + j] + c * R[i * n + j];
+                R[k * n + j] = t;
+            }
+
+            double tb = c * qb[k] + s * qb[i];
+            qb[i] = -s * qb[k] + c * qb[i];
+            qb[k] = tb;
+        }
+    }
+
+    // qb now holds Q^T b; back-substitute the upper-triangular system R x = qb
+    for (int i = n - 1; i >= 0; i--) {
+        if (fabs(R[i * n + i]) < TOLERANCE) {
+            result = SOLVER_SINGULAR_MATRIX;
+            goto cleanup;
+        }
+
+        double sum = qb[i];
+        for (int j = i + 1; j < n; j++) {
+            sum -= R[i * n + j] * x[j];
+        }
+        x[i] = sum / R[i * n + i];
+    }
+
+cleanup:
+    free(R);
+    free(qb);
+
+    set_info(info, 0, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
+    return result;
+}
+
+/* Modified Gram-Schmidt QR */
+int modified_gram_schmidt(double *A, double *b, double *x, int n, solver_info *info) {
+    double *Q = (double*)malloc(n * n * sizeof(double));
+    double *R = (double*)calloc(n * n, sizeof(double));
+    double *v = (double*)malloc(n * sizeof(double));
+    double *y = (double*)malloc(n * sizeof(double));
+    int result = SOLVER_SUCCESS;
+
+    if (!Q || !R || !v || !y) {
+        result = SOLVER_MEMORY_ERROR;
+        goto cleanup;
+    }
+
+    // Modified Gram-Schmidt QR: column j of Q stored at Q[k*n + j]
+    for (int j = 0; j < n; j++) {
+        for (int k = 0; k < n; k++) {
+            v[k] = A[k * n + j];
+        }
+
+        for (int i = 0; i < j; i++) {
+            double rij = 0.0;
+            for (int k = 0; k < n; k++) {
+                rij += Q[k * n + i] * v[k];
+            }
+            R[i * n + j] = rij;
+            for (int k = 0; k < n; k++) {
+                v[k] -= rij * Q[k * n + i];
+            }
+        }
+
+        double nrm = 0.0;
+        for (int k = 0; k < n; k++) {
+            nrm += v[k] * v[k];
+        }
+        nrm = sqrt(nrm);
+
+        if (nrm < TOLERANCE) {
+            result = SOLVER_SINGULAR_MATRIX;
+            goto cleanup;
+        }
+
+        R[j * n + j] = nrm;
+        for (int k = 0; k < n; k++) {
+            Q[k * n + j] = v[k] / nrm;
+        }
+    }
+
+    // y = Q^T b
+    for (int i = 0; i < n; i++) {
+        double dot = 0.0;
+        for (int k = 0; k < n; k++) {
+            dot += Q[k * n + i] * b[k];
+        }
+        y[i] = dot;
+    }
+
+    // Back-substitution: solve R x = y (R[i*n+i] > TOLERANCE)
+    for (int i = n - 1; i >= 0; i--) {
+        double sum = y[i];
+        for (int j = i + 1; j < n; j++) {
+            sum -= R[i * n + j] * x[j];
+        }
+        x[i] = sum / R[i * n + i];
+    }
+
+cleanup:
+    free(Q);
+    free(R);
+    free(v);
+    free(y);
+
+    set_info(info, 0, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
+    return result;
+}
+
+/* Classical Gram-Schmidt QR */
+int classical_gram_schmidt(double *A, double *b, double *x, int n, solver_info *info) {
+    double *Q = (double*)calloc(n * n, sizeof(double));
+    double *R = (double*)calloc(n * n, sizeof(double));
+    double *v = (double*)malloc(n * sizeof(double));
+    double *y = (double*)malloc(n * sizeof(double));
+    int result = SOLVER_SUCCESS;
+
+    if (!Q || !R || !v || !y) {
+        result = SOLVER_MEMORY_ERROR;
+        goto cleanup;
+    }
+
+    for (int j = 0; j < n; j++) {
+        for (int i = 0; i < j; i++) {
+            double dot = 0.0;
+            for (int k = 0; k < n; k++) {
+                dot += Q[k * n + i] * A[k * n + j];
+            }
+            R[i * n + j] = dot;
+        }
+
+        for (int k = 0; k < n; k++) {
+            double accum = A[k * n + j];
+            for (int i = 0; i < j; i++) {
+                accum -= R[i * n + j] * Q[k * n + i];
+            }
+            v[k] = accum;
+        }
+
+        double nrm = 0.0;
+        for (int k = 0; k < n; k++) {
+            nrm += v[k] * v[k];
+        }
+        nrm = sqrt(nrm);
+
+        if (nrm < TOLERANCE) {
+            result = SOLVER_SINGULAR_MATRIX;
+            goto cleanup;
+        }
+
+        R[j * n + j] = nrm;
+        for (int k = 0; k < n; k++) {
+            Q[k * n + j] = v[k] / nrm;
+        }
+    }
+
+    for (int i = 0; i < n; i++) {
+        double dot = 0.0;
+        for (int k = 0; k < n; k++) {
+            dot += Q[k * n + i] * b[k];
+        }
+        y[i] = dot;
+    }
+
+    for (int i = n - 1; i >= 0; i--) {
+        double sum = y[i];
+        for (int j = i + 1; j < n; j++) {
+            sum -= R[i * n + j] * x[j];
+        }
+        x[i] = sum / R[i * n + i];
+    }
+
+cleanup:
+    free(Q);
+    free(R);
+    free(v);
+    free(y);
+
+    set_info(info, 0, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
+    return result;
+}
+
+/* LQ Decomposition */
+int lq_decomposition(double *A, double *b, double *x, int n, solver_info *info) {
+    // LQ factorization via Householder QR of A^T: A = L*Q, L = Rb^T, Q = Qb^T
+    double *Qb = (double*)malloc(n * n * sizeof(double));
+    double *Rb = (double*)calloc(n * n, sizeof(double));
+    double *z = (double*)malloc(n * sizeof(double));
+    double *u = NULL;   // Will be allocated/freed in the loop
+    int result = SOLVER_SUCCESS;
+
+    // Check memory allocation
+    if (!Qb || !Rb || !z) {
+        result = SOLVER_MEMORY_ERROR;
+        goto cleanup;
+    }
+
+    // Initialize Rb with B = A^T (Rb[i*n+j] = A[j*n+i])
+    for (int i = 0; i < n; i++) {
+        for (int j = 0; j < n; j++) {
+            Rb[i * n + j] = A[j * n + i];
+        }
+    }
+
+    // Initialize Qb to identity matrix
+    for (int i = 0; i < n; i++) {
+        for (int j = 0; j < n; j++) {
+            Qb[i * n + j] = (i == j) ? 1.0 : 0.0;
+        }
+    }
+
+    // Householder QR on B = Qb * Rb (Qb explicit, Rb upper)
+    for (int k = 0; k < n - 1; k++) {
+        // Compute column norm below and including the diagonal
+        double alpha = 0.0;
+        for (int i = k; i < n; i++) {
+            alpha += Rb[i * n + k] * Rb[i * n + k];
+        }
+        alpha = sqrt(alpha);
+
+        // Adjust sign of alpha based on diagonal element
+        if (Rb[k * n + k] > 0) {
+            alpha = -alpha;
+        }
+
+        // Calculate first element of Householder vector and its squared norm
+        double u1 = Rb[k * n + k] - alpha;
+        double norm_u_squared = u1 * u1;
+        for (int i = k + 1; i < n; i++) {
+            norm_u_squared += Rb[i * n + k] * Rb[i * n + k];
+        }
+
+        // Skip if the norm is too small (avoid division by near-zero)
+        if (norm_u_squared < TOLERANCE) {
+            continue;
+        }
+
+        // Calculate the Householder coefficient
+        double beta = -2.0 / norm_u_squared;
+
+        // Allocate memory for Householder vector
+        u = (double*)calloc(n, sizeof(double));
+        if (!u) {
+            result = SOLVER_MEMORY_ERROR;
+            goto cleanup;
+        }
+
+        // Fill Householder vector
+        u[k] = u1;
+        for (int i = k + 1; i < n; i++) {
+            u[i] = Rb[i * n + k];
+        }
+
+        // Apply Householder reflection to Rb (left multiply)
+        for (int j = k; j < n; j++) {
+            double dot = 0.0;
+            for (int i = k; i < n; i++) {
+                dot += u[i] * Rb[i * n + j];
+            }
+            for (int i = k; i < n; i++) {
+                Rb[i * n + j] += beta * u[i] * dot;
+            }
+        }
+
+        // Accumulate Qb = Qb * H (right multiply) so that B = Qb * Rb
+        for (int j = 0; j < n; j++) {
+            double dot = 0.0;
+            for (int i = k; i < n; i++) {
+                dot += u[i] * Qb[j * n + i];
+            }
+            for (int i = k; i < n; i++) {
+                Qb[j * n + i] += beta * u[i] * dot;
+            }
+        }
+
+        // Free Householder vector memory immediately after use
+        free(u);
+        u = NULL;
+    }
+
+    // Singular if any diagonal of Rb (== diagonal of L) is too small
+    for (int i = 0; i < n; i++) {
+        if (fabs(Rb[i * n + i]) < TOLERANCE) {
+            result = SOLVER_SINGULAR_MATRIX;
+            goto cleanup;
+        }
+    }
+
+    // Solve L z = b with L = Rb^T (forward substitution): L[i][j] = Rb[j*n+i]
+    for (int i = 0; i < n; i++) {
+        double sum = b[i];
+        for (int j = 0; j < i; j++) {
+            sum -= Rb[j * n + i] * z[j];
+        }
+        z[i] = sum / Rb[i * n + i];
+    }
+
+    // x = Q^T z = Qb z
+    for (int i = 0; i < n; i++) {
+        x[i] = 0.0;
+        for (int j = 0; j < n; j++) {
+            x[i] += Qb[i * n + j] * z[j];
+        }
+    }
+
+cleanup:
+    // Clean up all allocated memory
+    free(Qb);
+    free(Rb);
+    free(z);
+    free(u);  // Safe to call even if u is NULL
+
+    set_info(info, 0, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
+    return result;
+}
+
+/* Richardson Iteration */
+int richardson(double *A, double *b, double *x, int n, solver_info *info) {
+    double *r = (double*)malloc(n * sizeof(double));
+    if (!r) {
+        return SOLVER_MEMORY_ERROR;
+    }
+
+    int iter = 0;
+    double residual = 0.0;
+    int result = SOLVER_SUCCESS;
+
+    // Initialize x with zeros
+    for (int i = 0; i < n; i++) {
+        x[i] = 0.0;
+    }
+
+    // Spectrum-safe step from the infinity-norm (Gershgorin) bound
+    double gershgorin_bound = 0.0;
+    for (int i = 0; i < n; i++) {
+        double row_sum = 0.0;
+        for (int j = 0; j < n; j++) {
+            row_sum += fabs(A[i * n + j]);
+        }
+        if (row_sum > gershgorin_bound) {
+            gershgorin_bound = row_sum;
+        }
+    }
+
+    if (gershgorin_bound < TOLERANCE) {
+        result = SOLVER_INVALID_PARAMETERS;
+        goto cleanup;
+    }
+
+    double omega = 1.0 / gershgorin_bound;
+
+    for (iter = 0; iter < MAX_ITERATIONS; iter++) {
+        // Residual r = b - A x
+        residual = 0.0;
+        for (int i = 0; i < n; i++) {
+            double sum = 0.0;
+            for (int j = 0; j < n; j++) {
+                sum += A[i * n + j] * x[j];
+            }
+            r[i] = b[i] - sum;
+            residual += r[i] * r[i];
+        }
+        residual = sqrt(residual);
+
+        if (residual < TOLERANCE) {
+            break;
+        }
+
+        // Richardson update x = x + omega * r
+        for (int i = 0; i < n; i++) {
+            x[i] += omega * r[i];
+        }
+    }
+
+    if (iter == MAX_ITERATIONS) {
+        result = SOLVER_NOT_CONVERGED;
+    }
+
+cleanup:
+    free(r);
+    set_info(info,
+             (iter < MAX_ITERATIONS) ? iter + 1 : MAX_ITERATIONS,
+             result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN,
+             result);
+    return result;
+}
+
+/* Symmetric Successive Over-Relaxation (SSOR) */
+int ssor(double *A, double *b, double *x, int n, solver_info *info) {
+    const double omega = 1.0;
+    int result = SOLVER_SUCCESS;
+    int iter = 0;
+    double rn = 0.0;
+
+    if (!A || !b || !x || n <= 0) {
+        return SOLVER_INVALID_PARAMETERS;
+    }
+
+    for (int i = 0; i < n; i++) {
+        if (fabs(A[i * n + i]) < TOLERANCE) {
+            set_info(info, 0, NAN, SOLVER_SINGULAR_MATRIX);
+            return SOLVER_SINGULAR_MATRIX;
+        }
+    }
+
+    for (int i = 0; i < n; i++) {
+        x[i] = 0.0;
+    }
+
+    for (iter = 0; iter < MAX_ITERATIONS; iter++) {
+        for (int i = 0; i < n; i++) {
+            double sigma = 0.0;
+            for (int j = 0; j < n; j++) {
+                if (j != i) {
+                    sigma += A[i * n + j] * x[j];
+                }
+            }
+            x[i] = (1.0 - omega) * x[i] + omega * (b[i] - sigma) / A[i * n + i];
+        }
+
+        for (int i = n - 1; i >= 0; i--) {
+            double sigma = 0.0;
+            for (int j = 0; j < n; j++) {
+                if (j != i) {
+                    sigma += A[i * n + j] * x[j];
+                }
+            }
+            x[i] = (1.0 - omega) * x[i] + omega * (b[i] - sigma) / A[i * n + i];
+        }
+
+        rn = residual_norm(A, b, x, n);
+        if (rn < TOLERANCE) {
+            break;
+        }
+    }
+
+    if (iter >= MAX_ITERATIONS && rn >= TOLERANCE) {
+        result = SOLVER_NOT_CONVERGED;
+    }
+
+    set_info(info,
+             (iter < MAX_ITERATIONS) ? iter + 1 : MAX_ITERATIONS,
+             result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN,
+             result);
+    return result;
+}
+
+/* BiCGSTAB */
+int bicgstab(double *A, double *b, double *x, int n, solver_info *info) {
+    double *r = NULL;       // Residual vector
+    double *r_hat = NULL;   // Shadow residual (fixed)
+    double *p = NULL;       // Search direction
+    double *v = NULL;       // A * p
+    double *s = NULL;       // Intermediate residual
+    double *t = NULL;       // A * s
+
+    double rho = 1.0, rho_new = 0.0, alpha = 1.0, omega = 1.0, beta = 0.0;
+    int iter = 0;
+    int result = SOLVER_SUCCESS;
+
+    double *memory_block = (double*)malloc(6 * n * sizeof(double));
+    if (!memory_block) {
+        result = SOLVER_MEMORY_ERROR;
+        goto cleanup;
+    }
+
+    r = memory_block;
+    r_hat = memory_block + n;
+    p = memory_block + 2 * n;
+    v = memory_block + 3 * n;
+    s = memory_block + 4 * n;
+    t = memory_block + 5 * n;
+
+    // Always start from a zero initial guess (do not trust the output buffer).
+    for (int i = 0; i < n; i++) {
+        x[i] = 0.0;
+    }
+
+    // With x = 0 the initial residual is simply b.
+    for (int i = 0; i < n; i++) {
+        r[i] = b[i];
+        r_hat[i] = r[i];
+        p[i] = 0.0;
+        v[i] = 0.0;
+    }
+
+    for (iter = 0; iter < MAX_ITERATIONS; iter++) {
+        rho_new = 0.0;
+        for (int i = 0; i < n; i++) {
+            rho_new += r_hat[i] * r[i];
+        }
+        if (fabs(rho_new) < 1e-30) {
+            result = SOLVER_NOT_CONVERGED;
+            break;
+        }
+
+        if (iter == 0) {
+            for (int i = 0; i < n; i++) {
+                p[i] = r[i];
+            }
+        } else {
+            beta = (rho_new / rho) * (alpha / omega);
+            for (int i = 0; i < n; i++) {
+                p[i] = r[i] + beta * (p[i] - omega * v[i]);
+            }
+        }
+
+        for (int i = 0; i < n; i++) {
+            v[i] = 0.0;
+            for (int j = 0; j < n; j++) {
+                v[i] += A[i * n + j] * p[j];
+            }
+        }
+
+        double rv = 0.0;
+        for (int i = 0; i < n; i++) {
+            rv += r_hat[i] * v[i];
+        }
+        if (fabs(rv) < 1e-30) {
+            result = SOLVER_NOT_CONVERGED;
+            break;
+        }
+        alpha = rho_new / rv;
+
+        for (int i = 0; i < n; i++) {
+            s[i] = r[i] - alpha * v[i];
+        }
+
+        double s_norm = 0.0;
+        for (int i = 0; i < n; i++) {
+            s_norm += s[i] * s[i];
+        }
+        s_norm = sqrt(s_norm);
+        if (s_norm < TOLERANCE) {
+            for (int i = 0; i < n; i++) {
+                x[i] += alpha * p[i];
+            }
+            result = SOLVER_SUCCESS;
+            break;
+        }
+
+        for (int i = 0; i < n; i++) {
+            t[i] = 0.0;
+            for (int j = 0; j < n; j++) {
+                t[i] += A[i * n + j] * s[j];
+            }
+        }
+
+        double tt = 0.0, ts = 0.0;
+        for (int i = 0; i < n; i++) {
+            tt += t[i] * t[i];
+            ts += t[i] * s[i];
+        }
+        if (tt < 1e-30) {
+            // A*s vanished while s is not yet small (s_norm >= TOLERANCE above):
+            // a BiCGSTAB breakdown on a (near-)singular system, not convergence.
+            result = SOLVER_NOT_CONVERGED;
+            break;
+        }
+        omega = ts / tt;
+
+        for (int i = 0; i < n; i++) {
+            x[i] += alpha * p[i] + omega * s[i];
+            r[i] = s[i] - omega * t[i];
+        }
+
+        rho = rho_new;
+
+        double r_norm = 0.0;
+        for (int i = 0; i < n; i++) {
+            r_norm += r[i] * r[i];
+        }
+        r_norm = sqrt(r_norm);
+        if (r_norm < TOLERANCE) {
+            result = SOLVER_SUCCESS;
+            break;
+        }
+    }
+
+    if (result == SOLVER_SUCCESS && iter >= MAX_ITERATIONS) {
+        result = SOLVER_NOT_CONVERGED;
+    }
+
+cleanup:
+    free(memory_block);
+    set_info(info, iter, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
+    return result;
+}
+
+/* Conjugate Gradient Squared (CGS) */
+int cgs(double *A, double *b, double *x, int n, solver_info *info) {
+    double *r = NULL;       // Residual vector
+    double *r_hat = NULL;   // Fixed shadow residual
+    double *u = NULL;       // Auxiliary vector u
+    double *p = NULL;       // Search direction
+    double *q = NULL;       // Auxiliary vector q
+    double *v = NULL;       // A * p
+    double *u_plus_q = NULL; // u + q
+    double *t = NULL;       // A * (u + q)
+
+    double rho = 1.0, rho_new = 0.0, alpha = 0.0, beta = 0.0;
+    double r_hat_v = 0.0, residual = 0.0;
+    int iter = 0;
+    int result = SOLVER_SUCCESS;
+
+    double *memory_block = (double*)malloc(8 * n * sizeof(double));
+    if (!memory_block) {
+        result = SOLVER_MEMORY_ERROR;
+        goto cleanup;
+    }
+
+    r = memory_block;
+    r_hat = memory_block + n;
+    u = memory_block + 2 * n;
+    p = memory_block + 3 * n;
+    q = memory_block + 4 * n;
+    v = memory_block + 5 * n;
+    u_plus_q = memory_block + 6 * n;
+    t = memory_block + 7 * n;
+
+    // Always start from a zero initial guess (do not trust the output buffer).
+    for (int i = 0; i < n; i++) {
+        x[i] = 0.0;
+    }
+
+    // With x = 0 the initial residual is simply r = b. Initialize shadow and work vectors.
+    for (int i = 0; i < n; i++) {
+        r[i] = b[i];
+        r_hat[i] = b[i];
+        p[i] = 0.0;
+        q[i] = 0.0;
+        u[i] = 0.0;
+    }
+
+    // Initial residual norm
+    residual = 0.0;
+    for (int i = 0; i < n; i++) {
+        residual += r[i] * r[i];
+    }
+    residual = sqrt(residual);
+
+    for (iter = 0; iter < MAX_ITERATIONS && residual > TOLERANCE; iter++) {
+        rho_new = 0.0;
+        for (int i = 0; i < n; i++) {
+            rho_new += r_hat[i] * r[i];
+        }
+
+        if (fabs(rho_new) < 1e-30) {
+            result = SOLVER_NOT_CONVERGED;
+            break;
+        }
+
+        beta = rho_new / rho;
+
+        for (int i = 0; i < n; i++) {
+            u[i] = r[i] + beta * q[i];
+        }
+        for (int i = 0; i < n; i++) {
+            p[i] = u[i] + beta * (q[i] + beta * p[i]);
+        }
+
+        // v = A * p
+        for (int i = 0; i < n; i++) {
+            v[i] = 0.0;
+            for (int j = 0; j < n; j++) {
+                v[i] += A[i * n + j] * p[j];
+            }
+        }
+
+        r_hat_v = 0.0;
+        for (int i = 0; i < n; i++) {
+            r_hat_v += r_hat[i] * v[i];
+        }
+
+        if (fabs(r_hat_v) < 1e-30) {
+            result = SOLVER_NOT_CONVERGED;
+            break;
+        }
+
+        alpha = rho_new / r_hat_v;
+
+        for (int i = 0; i < n; i++) {
+            q[i] = u[i] - alpha * v[i];
+        }
+        for (int i = 0; i < n; i++) {
+            u_plus_q[i] = u[i] + q[i];
+        }
+        for (int i = 0; i < n; i++) {
+            x[i] += alpha * u_plus_q[i];
+        }
+
+        // t = A * (u + q)
+        for (int i = 0; i < n; i++) {
+            t[i] = 0.0;
+            for (int j = 0; j < n; j++) {
+                t[i] += A[i * n + j] * u_plus_q[j];
+            }
+        }
+
+        for (int i = 0; i < n; i++) {
+            r[i] -= alpha * t[i];
+        }
+
+        rho = rho_new;
+
+        residual = 0.0;
+        for (int i = 0; i < n; i++) {
+            residual += r[i] * r[i];
+        }
+        residual = sqrt(residual);
+    }
+
+    // A run that exhausts the iteration budget without converging has not succeeded
+    if (result == SOLVER_SUCCESS && iter >= MAX_ITERATIONS && residual > TOLERANCE) {
+        result = SOLVER_NOT_CONVERGED;
+    }
+
+cleanup:
+    free(memory_block);
+
+    set_info(info, iter, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
+    return result;
+}
+
+/* Transpose-Free QMR (TFQMR) */
+int tfqmr(double *A, double *b, double *x, int n, solver_info *info) {
+    double *r = NULL;
+    double *w = NULL;
+    double *y1 = NULL;
+    double *y2 = NULL;
+    double *v = NULL;
+    double *Au1 = NULL;
+    double *Au2 = NULL;
+    double *d = NULL;
+    double *rhat = NULL;
+
+    int iter = 0;
+    int result = SOLVER_SUCCESS;
+    int converged = 0;
+    double tau = 0.0, theta = 0.0, eta = 0.0;
+    double rho = 0.0, rho_new = 0.0, sigma = 0.0, alpha = 0.0, beta = 0.0;
+
+    r    = (double*)malloc(n * sizeof(double));
+    w    = (double*)malloc(n * sizeof(double));
+    y1   = (double*)malloc(n * sizeof(double));
+    y2   = (double*)malloc(n * sizeof(double));
+    v    = (double*)malloc(n * sizeof(double));
+    Au1  = (double*)malloc(n * sizeof(double));
+    Au2  = (double*)malloc(n * sizeof(double));
+    d    = (double*)malloc(n * sizeof(double));
+    rhat = (double*)malloc(n * sizeof(double));
+    if (!r || !w || !y1 || !y2 || !v || !Au1 || !Au2 || !d || !rhat) {
+        result = SOLVER_MEMORY_ERROR;
+        goto cleanup;
+    }
+
+    for (int i = 0; i < n; i++) {
+        x[i] = 0.0;
+    }
+
+    for (int i = 0; i < n; i++) {
+        r[i] = b[i];
+        w[i] = r[i];
+        y1[i] = r[i];
+        rhat[i] = r[i];
+        d[i] = 0.0;
+    }
+
+    for (int i = 0; i < n; i++) {
+        double acc = 0.0;
+        for (int j = 0; j < n; j++) {
+            acc += A[i * n + j] * y1[j];
+        }
+        v[i] = acc;
+        Au1[i] = acc;
+    }
+
+    tau = 0.0;
+    rho = 0.0;
+    for (int i = 0; i < n; i++) {
+        tau += r[i] * r[i];
+        rho += rhat[i] * r[i];
+    }
+    tau = sqrt(tau);
+
+    if (tau <= TOLERANCE) {
+        converged = 1;
+        goto finish;
+    }
+
+    for (iter = 1; iter <= MAX_ITERATIONS; iter++) {
+        sigma = 0.0;
+        for (int i = 0; i < n; i++) {
+            sigma += rhat[i] * v[i];
+        }
+        if (fabs(sigma) < 1e-30) {
+            result = SOLVER_NOT_CONVERGED;
+            break;
+        }
+        alpha = rho / sigma;
+
+        for (int i = 0; i < n; i++) {
+            y2[i] = y1[i] - alpha * v[i];
+        }
+        for (int i = 0; i < n; i++) {
+            double acc = 0.0;
+            for (int j = 0; j < n; j++) {
+                acc += A[i * n + j] * y2[j];
+            }
+            Au2[i] = acc;
+        }
+
+        for (int half = 0; half < 2; half++) {
+            double *y  = (half == 0) ? y1  : y2;
+            double *Ay = (half == 0) ? Au1 : Au2;
+
+            for (int i = 0; i < n; i++) {
+                w[i] -= alpha * Ay[i];
+            }
+
+            double w_norm = 0.0;
+            for (int i = 0; i < n; i++) {
+                w_norm += w[i] * w[i];
+            }
+            w_norm = sqrt(w_norm);
+
+            double d_coef = (theta * theta * eta) / alpha;
+            for (int i = 0; i < n; i++) {
+                d[i] = y[i] + d_coef * d[i];
+            }
+
+            double theta_new = w_norm / tau;
+            double c = 1.0 / sqrt(1.0 + theta_new * theta_new);
+            tau = tau * theta_new * c;
+            eta = c * c * alpha;
+            theta = theta_new;
+
+            for (int i = 0; i < n; i++) {
+                x[i] += eta * d[i];
+            }
+
+            int step = 2 * iter - 1 + half;
+            if (tau * sqrt((double)(step + 1)) <= TOLERANCE) {
+                converged = 1;
+                break;
+            }
+        }
+
+        if (converged) {
+            break;
+        }
+
+        rho_new = 0.0;
+        for (int i = 0; i < n; i++) {
+            rho_new += rhat[i] * w[i];
+        }
+        if (fabs(rho) < 1e-30) {
+            result = SOLVER_NOT_CONVERGED;
+            break;
+        }
+        beta = rho_new / rho;
+
+        for (int i = 0; i < n; i++) {
+            y1[i] = w[i] + beta * y2[i];
+        }
+        for (int i = 0; i < n; i++) {
+            double acc = 0.0;
+            for (int j = 0; j < n; j++) {
+                acc += A[i * n + j] * y1[j];
+            }
+            Au1[i] = acc;
+        }
+        for (int i = 0; i < n; i++) {
+            v[i] = Au1[i] + beta * (Au2[i] + beta * v[i]);
+        }
+        rho = rho_new;
+    }
+
+finish:
+    if (result == SOLVER_SUCCESS && !converged) {
+        result = SOLVER_NOT_CONVERGED;
+    }
+
+cleanup:
+    free(r);
+    free(w);
+    free(y1);
+    free(y2);
+    free(v);
+    free(Au1);
+    free(Au2);
+    free(d);
+    free(rhat);
+
+    set_info(info, iter, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
+    return result;
+}
+
+/* Quasi-Minimal Residual (QMR) */
+int qmr(double *A, double *b, double *x, int n, solver_info *info) {
+    int result = SOLVER_SUCCESS;
+    int iter = 0;
+    int iterations_done = 0;
+
+    double *r = NULL;
+    double *v_tilde = NULL;
+    double *w_tilde = NULL;
+    double *v = NULL;
+    double *w = NULL;
+    double *p = NULL;
+    double *q = NULL;
+    double *p_hat = NULL;
+    double *d = NULL;
+    double *s = NULL;
+    double *Atq = NULL;
+
+    r = (double*)malloc(n * sizeof(double));
+    v_tilde = (double*)malloc(n * sizeof(double));
+    w_tilde = (double*)malloc(n * sizeof(double));
+    v = (double*)malloc(n * sizeof(double));
+    w = (double*)malloc(n * sizeof(double));
+    p = (double*)malloc(n * sizeof(double));
+    q = (double*)malloc(n * sizeof(double));
+    p_hat = (double*)malloc(n * sizeof(double));
+    d = (double*)malloc(n * sizeof(double));
+    s = (double*)malloc(n * sizeof(double));
+    Atq = (double*)malloc(n * sizeof(double));
+
+    if (!r || !v_tilde || !w_tilde || !v || !w || !p || !q || !p_hat || !d || !s || !Atq) {
+        result = SOLVER_MEMORY_ERROR;
+        goto cleanup;
+    }
+
+    for (int i = 0; i < n; i++) {
+        x[i] = 0.0;
+    }
+
+    double rho = 0.0, xi = 0.0;
+    for (int i = 0; i < n; i++) {
+        r[i] = b[i];
+        v_tilde[i] = r[i];
+        w_tilde[i] = r[i];
+        d[i] = 0.0;
+        s[i] = 0.0;
+        rho += v_tilde[i] * v_tilde[i];
+        xi += w_tilde[i] * w_tilde[i];
+    }
+    rho = sqrt(rho);
+    xi = sqrt(xi);
+
+    double res_norm = rho;
+    if (res_norm < TOLERANCE) {
+        result = SOLVER_SUCCESS;
+        goto cleanup;
+    }
+
+    double gamma_prev = 1.0, eta_prev = -1.0;
+    double epsilon_prev = 0.0, theta_prev = 0.0;
+
+    for (iter = 0; iter < MAX_ITERATIONS; iter++) {
+        if (rho < 1e-30 || xi < 1e-30) {
+            result = SOLVER_NOT_CONVERGED;
+            iterations_done = iter + 1;
+            goto cleanup;
+        }
+
+        for (int i = 0; i < n; i++) {
+            v[i] = v_tilde[i] / rho;
+            w[i] = w_tilde[i] / xi;
+        }
+
+        double delta = 0.0;
+        for (int i = 0; i < n; i++) {
+            delta += w[i] * v[i];
+        }
+        if (fabs(delta) < 1e-30) {
+            result = SOLVER_NOT_CONVERGED;
+            iterations_done = iter + 1;
+            goto cleanup;
+        }
+
+        if (iter == 0) {
+            for (int i = 0; i < n; i++) {
+                p[i] = v[i];
+                q[i] = w[i];
+            }
+        } else {
+            double p_coeff = (xi * delta) / epsilon_prev;
+            double q_coeff = (rho * delta) / epsilon_prev;
+            for (int i = 0; i < n; i++) {
+                p[i] = v[i] - p_coeff * p[i];
+                q[i] = w[i] - q_coeff * q[i];
+            }
+        }
+
+        for (int i = 0; i < n; i++) {
+            double sum = 0.0;
+            for (int j = 0; j < n; j++) {
+                sum += A[i * n + j] * p[j];
+            }
+            p_hat[i] = sum;
+        }
+
+        double epsilon = 0.0;
+        for (int i = 0; i < n; i++) {
+            epsilon += q[i] * p_hat[i];
+        }
+        if (fabs(epsilon) < 1e-30) {
+            result = SOLVER_NOT_CONVERGED;
+            iterations_done = iter + 1;
+            goto cleanup;
+        }
+
+        double beta = epsilon / delta;
+        if (fabs(beta) < 1e-30) {
+            result = SOLVER_NOT_CONVERGED;
+            iterations_done = iter + 1;
+            goto cleanup;
+        }
+
+        for (int i = 0; i < n; i++) {
+            double sum = 0.0;
+            for (int j = 0; j < n; j++) {
+                sum += A[j * n + i] * q[j];
+            }
+            Atq[i] = sum;
+        }
+
+        double rho_new = 0.0, xi_new = 0.0;
+        for (int i = 0; i < n; i++) {
+            v_tilde[i] = p_hat[i] - beta * v[i];
+            w_tilde[i] = Atq[i] - beta * w[i];
+            rho_new += v_tilde[i] * v_tilde[i];
+            xi_new += w_tilde[i] * w_tilde[i];
+        }
+        rho_new = sqrt(rho_new);
+        xi_new = sqrt(xi_new);
+
+        if (gamma_prev < 1e-30) {
+            result = SOLVER_NOT_CONVERGED;
+            iterations_done = iter + 1;
+            goto cleanup;
+        }
+
+        double theta = rho_new / (gamma_prev * fabs(beta));
+        double gamma = 1.0 / sqrt(1.0 + theta * theta);
+        if (gamma < 1e-30) {
+            result = SOLVER_NOT_CONVERGED;
+            iterations_done = iter + 1;
+            goto cleanup;
+        }
+
+        double eta = -eta_prev * rho * gamma * gamma / (beta * gamma_prev * gamma_prev);
+
+        double d_scale = (theta_prev * gamma) * (theta_prev * gamma);
+        for (int i = 0; i < n; i++) {
+            d[i] = eta * p[i] + d_scale * d[i];
+            s[i] = eta * p_hat[i] + d_scale * s[i];
+            x[i] += d[i];
+            r[i] -= s[i];
+        }
+
+        res_norm = 0.0;
+        for (int i = 0; i < n; i++) {
+            res_norm += r[i] * r[i];
+        }
+        res_norm = sqrt(res_norm);
+
+        if (res_norm < TOLERANCE) {
+            result = SOLVER_SUCCESS;
+            iterations_done = iter + 1;
+            goto cleanup;
+        }
+
+        rho = rho_new;
+        xi = xi_new;
+        gamma_prev = gamma;
+        eta_prev = eta;
+        epsilon_prev = epsilon;
+        theta_prev = theta;
+    }
+
+    iterations_done = iter;
+    result = SOLVER_NOT_CONVERGED;
+
+cleanup:
+    free(r);
+    free(v_tilde);
+    free(w_tilde);
+    free(v);
+    free(w);
+    free(p);
+    free(q);
+    free(p_hat);
+    free(d);
+    free(s);
+    free(Atq);
+
+    set_info(info, iterations_done,
+             result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
+    return result;
+}
+
+/* Generalized Conjugate Residual (GCR) */
+int gcr(double *A, double *b, double *x, int n, solver_info *info) {
+    const int max_dir = n;     // Stored direction capacity: full GCR for small dense systems
+
+    double *P = NULL;          // Stored search directions, max_dir vectors of length n, row-major
+    double *AP = NULL;         // A * P columns, orthonormalized, row-major
+    double *r = NULL;          // Residual vector b - A x
+    double *Ar = NULL;         // A * r
+    double *p_new = NULL;      // Candidate search direction
+    double *ap_new = NULL;     // A * p_new
+
+    int total_iter = 0;
+    int result = SOLVER_SUCCESS;
+    int converged = 0;
+    int k = 0;
+
+    P      = (double*)malloc((size_t)max_dir * (size_t)n * sizeof(double));
+    AP     = (double*)malloc((size_t)max_dir * (size_t)n * sizeof(double));
+    r      = (double*)malloc((size_t)n * sizeof(double));
+    Ar     = (double*)malloc((size_t)n * sizeof(double));
+    p_new  = (double*)malloc((size_t)n * sizeof(double));
+    ap_new = (double*)malloc((size_t)n * sizeof(double));
+
+    if (!P || !AP || !r || !Ar || !p_new || !ap_new) {
+        result = SOLVER_MEMORY_ERROR;
+        goto cleanup;
+    }
+
+    for (int i = 0; i < n; i++) {
+        x[i] = 0.0;
+        r[i] = b[i];
+    }
+
+    for (int iter = 0; iter < MAX_ITERATIONS; iter++) {
+        double r_norm = 0.0;
+        for (int i = 0; i < n; i++) {
+            r_norm += r[i] * r[i];
+        }
+        r_norm = sqrt(r_norm);
+        if (r_norm < TOLERANCE) {
+            converged = 1;
+            break;
+        }
+
+        total_iter++;
+
+        for (int i = 0; i < n; i++) {
+            double row = 0.0;
+            for (int j = 0; j < n; j++) {
+                row += A[i * n + j] * r[j];
+            }
+            Ar[i] = row;
+            p_new[i] = r[i];
+            ap_new[i] = row;
+        }
+
+        for (int j = 0; j < k; j++) {
+            double bj = 0.0;
+            for (int i = 0; i < n; i++) {
+                bj += ap_new[i] * AP[(size_t)j * n + i];
+            }
+            for (int i = 0; i < n; i++) {
+                ap_new[i] -= bj * AP[(size_t)j * n + i];
+                p_new[i]  -= bj * P[(size_t)j * n + i];
+            }
+        }
+
+        double nap = 0.0;
+        for (int i = 0; i < n; i++) {
+            nap += ap_new[i] * ap_new[i];
+        }
+        if (nap < 1e-30) {
+            result = SOLVER_NOT_CONVERGED;
+            goto cleanup;
+        }
+
+        if (k == max_dir) {
+            k = 0;
+        }
+
+        double inv = 1.0 / sqrt(nap);
+        for (int i = 0; i < n; i++) {
+            P[(size_t)k * n + i]  = p_new[i] * inv;
+            AP[(size_t)k * n + i] = ap_new[i] * inv;
+        }
+
+        double alpha = 0.0;
+        for (int i = 0; i < n; i++) {
+            alpha += r[i] * AP[(size_t)k * n + i];
+        }
+        for (int i = 0; i < n; i++) {
+            x[i] += alpha * P[(size_t)k * n + i];
+            r[i] -= alpha * AP[(size_t)k * n + i];
+        }
+        k++;
+    }
+
+    if (!converged) {
+        double final_norm = 0.0;
+        for (int i = 0; i < n; i++) {
+            final_norm += r[i] * r[i];
+        }
+        final_norm = sqrt(final_norm);
+        if (final_norm < TOLERANCE) {
+            converged = 1;
+        }
+    }
+
+    result = converged ? SOLVER_SUCCESS : SOLVER_NOT_CONVERGED;
+
+cleanup:
+    free(P);
+    free(AP);
+    free(r);
+    free(Ar);
+    free(p_new);
+    free(ap_new);
+
+    set_info(info, total_iter, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
+    return result;
+}
+
+/* LSQR */
+int lsqr(double *A, double *b, double *x, int n, solver_info *info) {
+    double *u = NULL;      // Left bidiagonalization vector
+    double *v = NULL;      // Right bidiagonalization vector
+    double *w = NULL;      // Search direction
+    double *Av = NULL;     // A * v
+    double *Atu = NULL;    // A^T * u
+
+    double alpha = 0.0, beta = 0.0;
+    double phibar = 0.0, rhobar = 0.0;
+    int iter = 0;
+    int result = SOLVER_SUCCESS;
+
+    // Allocate all memory at once
+    double *memory_block = (double*)malloc(5 * n * sizeof(double));
+    if (!memory_block) {
+        result = SOLVER_MEMORY_ERROR;
+        goto cleanup;
+    }
+
+    u = memory_block;
+    v = memory_block + n;
+    w = memory_block + 2 * n;
+    Av = memory_block + 3 * n;
+    Atu = memory_block + 4 * n;
+
+    // Always start from a zero solution (do not trust the output buffer).
+    for (int i = 0; i < n; i++) {
+        x[i] = 0.0;
+    }
+
+    // beta = ||b||; u = b / beta
+    beta = 0.0;
+    for (int i = 0; i < n; i++) {
+        beta += b[i] * b[i];
+    }
+    beta = sqrt(beta);
+
+    if (beta < 1e-30) {
+        // b is the zero vector: x = 0 is the exact solution
+        result = SOLVER_SUCCESS;
+        goto cleanup;
+    }
+
+    for (int i = 0; i < n; i++) {
+        u[i] = b[i] / beta;
+    }
+
+    // Atu = A^T u; alpha = ||Atu||; v = Atu / alpha
+    for (int i = 0; i < n; i++) {
+        Atu[i] = 0.0;
+        for (int j = 0; j < n; j++) {
+            Atu[i] += A[j * n + i] * u[j];
+        }
+    }
+
+    alpha = 0.0;
+    for (int i = 0; i < n; i++) {
+        alpha += Atu[i] * Atu[i];
+    }
+    alpha = sqrt(alpha);
+
+    if (alpha < 1e-30) {
+        // A^T b = 0 with b != 0 means b is orthogonal to range(A): A is rank
+        // deficient, so the system has no unique solution.
+        result = SOLVER_SINGULAR_MATRIX;
+        goto cleanup;
+    }
+
+    for (int i = 0; i < n; i++) {
+        v[i] = Atu[i] / alpha;
+        w[i] = v[i];
+    }
+
+    phibar = beta;
+    rhobar = alpha;
+
+    // LSQR iteration
+    for (iter = 0; iter < MAX_ITERATIONS; iter++) {
+        // Bidiagonalization: u = A*v - alpha*u; beta = ||u||; u /= beta
+        for (int i = 0; i < n; i++) {
+            Av[i] = 0.0;
+            for (int j = 0; j < n; j++) {
+                Av[i] += A[i * n + j] * v[j];
+            }
+        }
+
+        for (int i = 0; i < n; i++) {
+            u[i] = Av[i] - alpha * u[i];
+        }
+
+        beta = 0.0;
+        for (int i = 0; i < n; i++) {
+            beta += u[i] * u[i];
+        }
+        beta = sqrt(beta);
+
+        if (beta > 1e-30) {
+            for (int i = 0; i < n; i++) {
+                u[i] /= beta;
+            }
+        }
+
+        // Bidiagonalization: v = A^T*u - beta*v; alpha = ||v||; v /= alpha
+        for (int i = 0; i < n; i++) {
+            Atu[i] = 0.0;
+            for (int j = 0; j < n; j++) {
+                Atu[i] += A[j * n + i] * u[j];
+            }
+        }
+
+        for (int i = 0; i < n; i++) {
+            v[i] = Atu[i] - beta * v[i];
+        }
+
+        alpha = 0.0;
+        for (int i = 0; i < n; i++) {
+            alpha += v[i] * v[i];
+        }
+        alpha = sqrt(alpha);
+
+        if (alpha > 1e-30) {
+            for (int i = 0; i < n; i++) {
+                v[i] /= alpha;
+            }
+        }
+
+        // Givens rotation on the bidiagonal
+        double rho = hypot(rhobar, beta);
+        if (rho < 1e-30) {
+            result = SOLVER_NOT_CONVERGED;
+            break;
+        }
+
+        double c = rhobar / rho;
+        double s = beta / rho;
+        double theta = s * alpha;
+        rhobar = -c * alpha;
+        double phi = c * phibar;
+        phibar = s * phibar;
+
+        // Update solution and search direction
+        for (int i = 0; i < n; i++) {
+            x[i] += (phi / rho) * w[i];
+        }
+        for (int i = 0; i < n; i++) {
+            w[i] = v[i] - (theta / rho) * w[i];
+        }
+
+        // phibar estimates the residual norm ||b - A x||
+        if (fabs(phibar) < TOLERANCE) {
+            iter++;
+            break;
+        }
+    }
+
+    // A run that exhausts the iteration budget without converging has not succeeded
+    if (result == SOLVER_SUCCESS && iter >= MAX_ITERATIONS && fabs(phibar) > TOLERANCE) {
+        result = SOLVER_NOT_CONVERGED;
+    }
+
+cleanup:
+    free(memory_block);
+
+    set_info(info, iter, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
+    return result;
+}
+
+/* Conjugate Gradient on Normal Equations (CGNR) */
+int cgnr(double *A, double *b, double *x, int n, solver_info *info) {
+    int result = SOLVER_SUCCESS;
+    int iter = 0;
+    int iterations_done = 0;
+    double *r = NULL;
+    double *s = NULL;
+    double *p = NULL;
+    double *q = NULL;
+
+    r = (double*)malloc(n * sizeof(double));
+    s = (double*)malloc(n * sizeof(double));
+    p = (double*)malloc(n * sizeof(double));
+    q = (double*)malloc(n * sizeof(double));
+
+    if (!r || !s || !p || !q) {
+        result = SOLVER_MEMORY_ERROR;
+        goto cleanup;
+    }
+
+    // Initialize x with zeros
+    for (int i = 0; i < n; i++) {
+        x[i] = 0.0;
+    }
+
+    // Initial residual r = b - Ax = b (since x = 0)
+    for (int i = 0; i < n; i++) {
+        r[i] = b[i];
+    }
+
+    // s = A^T r, p = s
+    for (int j = 0; j < n; j++) {
+        double sum = 0.0;
+        for (int i = 0; i < n; i++) {
+            sum += A[i * n + j] * r[i];
+        }
+        s[j] = sum;
+        p[j] = sum;
+    }
+
+    double g = 0.0;
+    for (int i = 0; i < n; i++) {
+        g += s[i] * s[i];
+    }
+
+    for (iter = 0; iter < MAX_ITERATIONS; iter++) {
+        // q = A p
+        for (int i = 0; i < n; i++) {
+            double sum = 0.0;
+            for (int j = 0; j < n; j++) {
+                sum += A[i * n + j] * p[j];
+            }
+            q[i] = sum;
+        }
+
+        double qq = 0.0;
+        for (int i = 0; i < n; i++) {
+            qq += q[i] * q[i];
+        }
+
+        if (qq < 1e-30) {
+            result = SOLVER_NOT_CONVERGED;
+            iterations_done = iter + 1;
+            goto cleanup;
+        }
+
+        double alpha = g / qq;
+
+        // Update solution and residual
+        for (int i = 0; i < n; i++) {
+            x[i] += alpha * p[i];
+            r[i] -= alpha * q[i];
+        }
+
+        // Check convergence on residual norm
+        double r_dot_r = 0.0;
+        for (int i = 0; i < n; i++) {
+            r_dot_r += r[i] * r[i];
+        }
+
+        if (sqrt(r_dot_r) < TOLERANCE) {
+            result = SOLVER_SUCCESS;
+            iterations_done = iter + 1;
+            goto cleanup;
+        }
+
+        // s = A^T r
+        for (int j = 0; j < n; j++) {
+            double sum = 0.0;
+            for (int i = 0; i < n; i++) {
+                sum += A[i * n + j] * r[i];
+            }
+            s[j] = sum;
+        }
+
+        double g_new = 0.0;
+        for (int i = 0; i < n; i++) {
+            g_new += s[i] * s[i];
+        }
+
+        double beta = g_new / g;
+        for (int i = 0; i < n; i++) {
+            p[i] = s[i] + beta * p[i];
+        }
+
+        g = g_new;
+    }
+
+    // Exhausted iterations without convergence
+    iterations_done = iter;
+    result = SOLVER_NOT_CONVERGED;
+
+cleanup:
+    free(r);
+    free(s);
+    free(p);
+    free(q);
+
+    set_info(info, iterations_done,
+             result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
+    return result;
+}
+
+/* Preconditioned Conjugate Gradient (Jacobi) */
+int preconditioned_conjugate_gradient(double *A, double *b, double *x, int n, solver_info *info) {
+    int result = SOLVER_SUCCESS;
+    int iter = 0;
+    double *r = NULL;
+    double *z = NULL;
+    double *p = NULL;
+    double *Ap = NULL;
+
+    int iterations_done = 0;
+
+    // Check matrix symmetry
+    for (int i = 0; i < n; i++) {
+        for (int j = 0; j < i; j++) {
+            if (fabs(A[i * n + j] - A[j * n + i]) > TOLERANCE) {
+                result = SOLVER_NOT_SPD_MATRIX;
+                goto cleanup;
+            }
+        }
+    }
+
+    // Check diagonal entries for the Jacobi preconditioner
+    for (int i = 0; i < n; i++) {
+        if (fabs(A[i * n + i]) < TOLERANCE) {
+            result = SOLVER_SINGULAR_MATRIX;
+            goto cleanup;
+        }
+    }
+
+    // Allocate memory for vectors
+    r = (double*)malloc(n * sizeof(double));
+    z = (double*)malloc(n * sizeof(double));
+    p = (double*)malloc(n * sizeof(double));
+    Ap = (double*)malloc(n * sizeof(double));
+
+    if (!r || !z || !p || !Ap) {
+        result = SOLVER_MEMORY_ERROR;
+        goto cleanup;
+    }
+
+    // Initialize x with zeros
+    for (int i = 0; i < n; i++) {
+        x[i] = 0.0;
+    }
+
+    // Initial residual r = b - Ax = b (x is zero)
+    for (int i = 0; i < n; i++) {
+        r[i] = b[i];
+    }
+
+    // Apply Jacobi preconditioner z = M^-1 r and set initial direction p = z
+    for (int i = 0; i < n; i++) {
+        z[i] = r[i] / A[i * n + i];
+        p[i] = z[i];
+    }
+
+    double rz = 0.0;
+    for (int i = 0; i < n; i++) {
+        rz += r[i] * z[i];
+    }
+
+    double r_dot_r = 0.0;
+    for (int i = 0; i < n; i++) {
+        r_dot_r += r[i] * r[i];
+    }
+
+    if (sqrt(r_dot_r) < TOLERANCE) {
+        result = SOLVER_SUCCESS;
+        goto cleanup;
+    }
+
+    for (iter = 0; iter < MAX_ITERATIONS; iter++) {
+        // Calculate Ap
+        for (int i = 0; i < n; i++) {
+            Ap[i] = 0.0;
+            for (int j = 0; j < n; j++) {
+                Ap[i] += A[i * n + j] * p[j];
+            }
+        }
+
+        // Calculate curvature p^T A p
+        double p_dot_Ap = 0.0;
+        for (int i = 0; i < n; i++) {
+            p_dot_Ap += p[i] * Ap[i];
+        }
+
+        // For an SPD matrix p^T A p > 0; a non-positive value means A is not SPD.
+        if (p_dot_Ap <= 0.0) {
+            result = SOLVER_NOT_SPD_MATRIX;
+            iterations_done = iter + 1;
+            goto cleanup;
+        }
+
+        double alpha = rz / p_dot_Ap;
+
+        // Update solution and residual
+        for (int i = 0; i < n; i++) {
+            x[i] += alpha * p[i];
+            r[i] -= alpha * Ap[i];
+        }
+
+        // Check convergence on the true residual norm
+        double r_dot_r_new = 0.0;
+        for (int i = 0; i < n; i++) {
+            r_dot_r_new += r[i] * r[i];
+        }
+
+        if (sqrt(r_dot_r_new) < TOLERANCE) {
+            result = SOLVER_SUCCESS;
+            iterations_done = iter + 1;
+            goto cleanup;
+        }
+
+        // Apply preconditioner and update search direction
+        for (int i = 0; i < n; i++) {
+            z[i] = r[i] / A[i * n + i];
+        }
+
+        double rz_new = 0.0;
+        for (int i = 0; i < n; i++) {
+            rz_new += r[i] * z[i];
+        }
+
+        double beta = rz_new / rz;
+        for (int i = 0; i < n; i++) {
+            p[i] = z[i] + beta * p[i];
+        }
+
+        rz = rz_new;
+    }
+
+    // Set result based on convergence
+    iterations_done = iter;
+    result = (iter == MAX_ITERATIONS) ? SOLVER_NOT_CONVERGED : SOLVER_SUCCESS;
+
+cleanup:
+    // Free all allocated memory
+    free(r);
+    free(z);
+    free(p);
+    free(Ap);
+
+    set_info(info, iterations_done,
+             result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
+    return result;
+}
+
+/* Conjugate Residual */
+int conjugate_residual(double *A, double *b, double *x, int n, solver_info *info) {
+    int result = SOLVER_SUCCESS;
+    int iter = 0;
+    double *r = NULL;
+    double *p = NULL;
+    double *Ar = NULL;
+    double *Ap = NULL;
+
+    int iterations_done = 0;
+
+    // Check matrix symmetry
+    for (int i = 0; i < n; i++) {
+        for (int j = 0; j < i; j++) {
+            if (fabs(A[i * n + j] - A[j * n + i]) > TOLERANCE) {
+                result = SOLVER_NOT_SPD_MATRIX;
+                goto cleanup;
+            }
+        }
+    }
+
+    // Allocate memory for vectors
+    r = (double*)malloc(n * sizeof(double));
+    p = (double*)malloc(n * sizeof(double));
+    Ar = (double*)malloc(n * sizeof(double));
+    Ap = (double*)malloc(n * sizeof(double));
+
+    if (!r || !p || !Ar || !Ap) {
+        result = SOLVER_MEMORY_ERROR;
+        goto cleanup;
+    }
+
+    // Initialize x with zeros
+    for (int i = 0; i < n; i++) {
+        x[i] = 0.0;
+    }
+
+    // Initial residual r = b - Ax = b, with search direction p = r
+    for (int i = 0; i < n; i++) {
+        r[i] = b[i];
+        p[i] = r[i];
+    }
+
+    // Ar = A r, and initially Ap = Ar since p = r
+    for (int i = 0; i < n; i++) {
+        Ar[i] = 0.0;
+        for (int j = 0; j < n; j++) {
+            Ar[i] += A[i * n + j] * r[j];
+        }
+        Ap[i] = Ar[i];
+    }
+
+    double r_dot_r = 0.0;
+    double rAr = 0.0;
+    for (int i = 0; i < n; i++) {
+        r_dot_r += r[i] * r[i];
+        rAr += r[i] * Ar[i];
+    }
+
+    if (sqrt(r_dot_r) < TOLERANCE) {
+        result = SOLVER_SUCCESS;
+        goto cleanup;
+    }
+
+    for (iter = 0; iter < MAX_ITERATIONS; iter++) {
+        // Calculate step size alpha = (r^T A r) / (Ap^T Ap)
+        double Ap_dot_Ap = 0.0;
+        for (int i = 0; i < n; i++) {
+            Ap_dot_Ap += Ap[i] * Ap[i];
+        }
+
+        if (Ap_dot_Ap < 1e-30) {
+            result = SOLVER_NOT_CONVERGED;
+            iterations_done = iter + 1;
+            goto cleanup;
+        }
+
+        double alpha = rAr / Ap_dot_Ap;
+
+        // Update solution and residual
+        for (int i = 0; i < n; i++) {
+            x[i] += alpha * p[i];
+            r[i] -= alpha * Ap[i];
+        }
+
+        // Check convergence
+        double r_dot_r_new = 0.0;
+        for (int i = 0; i < n; i++) {
+            r_dot_r_new += r[i] * r[i];
+        }
+
+        if (sqrt(r_dot_r_new) < TOLERANCE) {
+            result = SOLVER_SUCCESS;
+            iterations_done = iter + 1;
+            goto cleanup;
+        }
+
+        // Ar = A r for the new residual
+        for (int i = 0; i < n; i++) {
+            Ar[i] = 0.0;
+            for (int j = 0; j < n; j++) {
+                Ar[i] += A[i * n + j] * r[j];
+            }
+        }
+
+        double rAr_new = 0.0;
+        for (int i = 0; i < n; i++) {
+            rAr_new += r[i] * Ar[i];
+        }
+
+        double beta = rAr_new / rAr;
+
+        // Update search direction and its image under A
+        for (int i = 0; i < n; i++) {
+            p[i] = r[i] + beta * p[i];
+            Ap[i] = Ar[i] + beta * Ap[i];
+        }
+
+        rAr = rAr_new;
+    }
+
+    // Set result based on convergence
+    iterations_done = iter;
+    result = (iter == MAX_ITERATIONS) ? SOLVER_NOT_CONVERGED : SOLVER_SUCCESS;
+
+cleanup:
+    // Free all allocated memory
+    free(r);
+    free(p);
+    free(Ar);
+    free(Ap);
+
+    set_info(info, iterations_done,
+             result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
+    return result;
+}
+
+/* SYMMLQ */
+int symmlq(double *A, double *b, double *x, int n, solver_info *info) {
+    int result = SOLVER_SUCCESS;
+    int steps = 0;
+
+    // The symmetric Lanczos recurrence below is only valid for symmetric A.
+    for (int i = 0; i < n; i++) {
+        for (int j = 0; j < i; j++) {
+            if (fabs(A[i * n + j] - A[j * n + i]) > TOLERANCE) {
+                set_info(info, 0, NAN, SOLVER_NOT_SPD_MATRIX);
+                return SOLVER_NOT_SPD_MATRIX;
+            }
+        }
+    }
+
+    // SYMMLQ (Paige-Saunders): symmetric Lanczos with an LQ factorization of the
+    // tridiagonal T, advancing the SYMMLQ (LQ) iterate via scalar rotations.
+    double *r1 = NULL;  // previous Lanczos residual, beta_k * v_{k-1}
+    double *r2 = NULL;  // current Lanczos residual, beta_{k+1} * v_{k+1}
+    double *v = NULL;   // current normalized Lanczos vector v_k
+    double *w = NULL;   // SYMMLQ direction (column of V Q^T)
+    double *y = NULL;   // work vector for A*v
+
+    r1 = (double*)malloc(n * sizeof(double));
+    r2 = (double*)malloc(n * sizeof(double));
+    v = (double*)malloc(n * sizeof(double));
+    w = (double*)malloc(n * sizeof(double));
+    y = (double*)malloc(n * sizeof(double));
+
+    if (!r1 || !r2 || !v || !w || !y) {
+        result = SOLVER_MEMORY_ERROR;
+        goto cleanup;
+    }
+
+    for (int i = 0; i < n; i++) {
+        x[i] = 0.0;
+    }
+
+    double beta1 = 0.0;
+    for (int i = 0; i < n; i++) {
+        beta1 += b[i] * b[i];
+    }
+    beta1 = sqrt(beta1);
+
+    if (beta1 < TOLERANCE) {
+        result = SOLVER_SUCCESS;
+        goto cleanup;
+    }
+
+    // First Lanczos vector v1 = b / beta1, with w seeded to v1.
+    double scale = 1.0 / beta1;
+    for (int i = 0; i < n; i++) {
+        r1[i] = b[i];
+        v[i] = b[i] * scale;
+        w[i] = v[i];
+    }
+
+    for (int i = 0; i < n; i++) {
+        double sum = 0.0;
+        for (int j = 0; j < n; j++) {
+            sum += A[i * n + j] * v[j];
+        }
+        y[i] = sum;
+    }
+
+    double alfa = 0.0;
+    for (int i = 0; i < n; i++) {
+        alfa += v[i] * y[i];
+    }
+    for (int i = 0; i < n; i++) {
+        y[i] -= (alfa / beta1) * r1[i];
+        r2[i] = y[i];
+    }
+
+    double oldb = beta1;
+    double beta = 0.0;
+    for (int i = 0; i < n; i++) {
+        beta += r2[i] * r2[i];
+    }
+    beta = sqrt(beta);
+
+    double gbar = alfa;
+    double dbar = beta;
+    double rhs1 = beta1;
+    double rhs2 = 0.0;
+
+    // Immediate breakdown: A v1 = alfa v1, so x = (beta1 / alfa) v1 is exact.
+    if (beta < 1e-30) {
+        if (fabs(gbar) > 1e-30) {
+            double coef = beta1 / gbar;
+            for (int i = 0; i < n; i++) {
+                x[i] = coef * v[i];
+            }
+        }
+        steps = 1;
+        result = (residual_norm(A, b, x, n) < TOLERANCE) ? SOLVER_SUCCESS : SOLVER_NOT_CONVERGED;
+        goto cleanup;
+    }
+
+    for (steps = 0; steps < MAX_ITERATIONS; ) {
+        // Extend the Lanczos process: v = v_{k+1}, beta = beta_{k+2}.
+        double s = 1.0 / beta;
+        for (int i = 0; i < n; i++) {
+            v[i] = s * y[i];
+        }
+
+        for (int i = 0; i < n; i++) {
+            double sum = 0.0;
+            for (int j = 0; j < n; j++) {
+                sum += A[i * n + j] * v[j];
+            }
+            y[i] = sum;
+        }
+
+        double beta_over_oldb = beta / oldb;
+        for (int i = 0; i < n; i++) {
+            y[i] -= beta_over_oldb * r1[i];
+        }
+
+        alfa = 0.0;
+        for (int i = 0; i < n; i++) {
+            alfa += v[i] * y[i];
+        }
+
+        double alfa_over_beta = alfa / beta;
+        for (int i = 0; i < n; i++) {
+            y[i] -= alfa_over_beta * r2[i];
+            r1[i] = r2[i];
+            r2[i] = y[i];
+        }
+
+        oldb = beta;
+        beta = 0.0;
+        for (int i = 0; i < n; i++) {
+            beta += r2[i] * r2[i];
+        }
+        beta = sqrt(beta);
+
+        // Next plane rotation of the LQ factorization of the tridiagonal T.
+        double gamma = sqrt(gbar * gbar + oldb * oldb);
+        double cs = gbar / gamma;
+        double sn = oldb / gamma;
+        double delta = cs * dbar + sn * alfa;
+        gbar = sn * dbar - cs * alfa;
+        double epsln = sn * beta;
+        dbar = -cs * beta;
+
+        // Advance the SYMMLQ iterate and its direction vector.
+        double z = rhs1 / gamma;
+        double z_cs = z * cs;
+        double z_sn = z * sn;
+        for (int i = 0; i < n; i++) {
+            double wi = w[i];
+            x[i] += z_cs * wi + z_sn * v[i];
+            w[i] = sn * wi - cs * v[i];
+        }
+
+        rhs1 = rhs2 - delta * z;
+        rhs2 = -epsln * z;
+
+        steps++;
+
+        if (residual_norm(A, b, x, n) < TOLERANCE) {
+            result = SOLVER_SUCCESS;
+            goto cleanup;
+        }
+        if (beta < 1e-30) {
+            result = (residual_norm(A, b, x, n) < TOLERANCE) ? SOLVER_SUCCESS : SOLVER_NOT_CONVERGED;
+            goto cleanup;
+        }
+    }
+
+    result = (residual_norm(A, b, x, n) < TOLERANCE) ? SOLVER_SUCCESS : SOLVER_NOT_CONVERGED;
+
+cleanup:
+    free(r1);
+    free(r2);
+    free(v);
+    free(w);
+    free(y);
+    set_info(info, steps, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
+    return result;
+}
+
+/* Chebyshev Semi-Iteration */
+int chebyshev(double *A, double *b, double *x, int n, solver_info *info) {
+    int result = SOLVER_SUCCESS;
+    int iter = 0;
+    int iterations_done = 0;
+    double *r = NULL;
+    double *p = NULL;
+    double *Ap = NULL;
+
+    for (int i = 0; i < n; i++) {
+        for (int j = 0; j < i; j++) {
+            if (fabs(A[i * n + j] - A[j * n + i]) > TOLERANCE) {
+                result = SOLVER_NOT_SPD_MATRIX;
+                goto cleanup;
+            }
+        }
+    }
+
+    double lambda_min = 0.0;
+    double lambda_max = 0.0;
+    for (int i = 0; i < n; i++) {
+        double rad = 0.0;
+        for (int j = 0; j < n; j++) {
+            if (j != i) {
+                rad += fabs(A[i * n + j]);
+            }
+        }
+        double lo = A[i * n + i] - rad;
+        double hi = A[i * n + i] + rad;
+        if (i == 0 || lo < lambda_min) {
+            lambda_min = lo;
+        }
+        if (i == 0 || hi > lambda_max) {
+            lambda_max = hi;
+        }
+    }
+
+    if (lambda_max <= 0.0) {
+        result = SOLVER_NOT_SPD_MATRIX;
+        goto cleanup;
+    }
+    if (lambda_min <= 0.0) {
+        lambda_min = lambda_max * 1e-6;
+    }
+    if (lambda_max <= lambda_min) {
+        lambda_max = lambda_min * (1.0 + 1e-6);
+    }
+
+    double d = (lambda_max + lambda_min) / 2.0;
+    double c = (lambda_max - lambda_min) / 2.0;
+
+    r = (double*)malloc(n * sizeof(double));
+    p = (double*)malloc(n * sizeof(double));
+    Ap = (double*)malloc(n * sizeof(double));
+
+    if (!r || !p || !Ap) {
+        result = SOLVER_MEMORY_ERROR;
+        goto cleanup;
+    }
+
+    for (int i = 0; i < n; i++) {
+        x[i] = 0.0;
+        r[i] = b[i];
+        p[i] = 0.0;
+    }
+
+    double alpha = 0.0;
+    double beta = 0.0;
+
+    for (iter = 0; iter < MAX_ITERATIONS; iter++) {
+        double r_dot_r = 0.0;
+        for (int i = 0; i < n; i++) {
+            r_dot_r += r[i] * r[i];
+        }
+        if (sqrt(r_dot_r) < TOLERANCE) {
+            result = SOLVER_SUCCESS;
+            iterations_done = iter;
+            goto cleanup;
+        }
+
+        if (iter == 0) {
+            for (int i = 0; i < n; i++) {
+                p[i] = r[i];
+            }
+            alpha = 1.0 / d;
+        } else {
+            if (iter == 1) {
+                beta = 0.5 * (c * alpha) * (c * alpha);
+            } else {
+                beta = (c * alpha / 2.0) * (c * alpha / 2.0);
+            }
+            alpha = 1.0 / (d - beta / alpha);
+            for (int i = 0; i < n; i++) {
+                p[i] = r[i] + beta * p[i];
+            }
+        }
+
+        for (int i = 0; i < n; i++) {
+            Ap[i] = 0.0;
+            for (int j = 0; j < n; j++) {
+                Ap[i] += A[i * n + j] * p[j];
+            }
+        }
+
+        for (int i = 0; i < n; i++) {
+            x[i] += alpha * p[i];
+        }
+        for (int i = 0; i < n; i++) {
+            r[i] -= alpha * Ap[i];
+        }
+    }
+
+    iterations_done = iter;
+    result = SOLVER_NOT_CONVERGED;
+
+cleanup:
+    free(r);
+    free(p);
+    free(Ap);
+
+    set_info(info, iterations_done,
+             result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
+    return result;
+}
+
 /**
  * Solver Entry Point
  */
@@ -3376,6 +5727,46 @@ int solve_linear_system(double *A, double *b, double *x, int n,
         result = determinant(A, b, x, n, info);
     } else if (strcmp(method, "eigenvalue_decomposition") == 0) {
         result = eigenvalue_decomposition(A, b, x, n, info);
+    } else if (strcmp(method, "crout") == 0) {
+        result = crout(A, b, x, n, info);
+    } else if (strcmp(method, "ldlt") == 0) {
+        result = ldlt(A, b, x, n, info);
+    } else if (strcmp(method, "thomas") == 0) {
+        result = thomas(A, b, x, n, info);
+    } else if (strcmp(method, "givens_qr") == 0) {
+        result = givens_qr(A, b, x, n, info);
+    } else if (strcmp(method, "modified_gram_schmidt") == 0) {
+        result = modified_gram_schmidt(A, b, x, n, info);
+    } else if (strcmp(method, "classical_gram_schmidt") == 0) {
+        result = classical_gram_schmidt(A, b, x, n, info);
+    } else if (strcmp(method, "lq_decomposition") == 0) {
+        result = lq_decomposition(A, b, x, n, info);
+    } else if (strcmp(method, "richardson") == 0) {
+        result = richardson(A, b, x, n, info);
+    } else if (strcmp(method, "ssor") == 0) {
+        result = ssor(A, b, x, n, info);
+    } else if (strcmp(method, "bicgstab") == 0) {
+        result = bicgstab(A, b, x, n, info);
+    } else if (strcmp(method, "cgs") == 0) {
+        result = cgs(A, b, x, n, info);
+    } else if (strcmp(method, "tfqmr") == 0) {
+        result = tfqmr(A, b, x, n, info);
+    } else if (strcmp(method, "qmr") == 0) {
+        result = qmr(A, b, x, n, info);
+    } else if (strcmp(method, "gcr") == 0) {
+        result = gcr(A, b, x, n, info);
+    } else if (strcmp(method, "lsqr") == 0) {
+        result = lsqr(A, b, x, n, info);
+    } else if (strcmp(method, "cgnr") == 0) {
+        result = cgnr(A, b, x, n, info);
+    } else if (strcmp(method, "preconditioned_conjugate_gradient") == 0) {
+        result = preconditioned_conjugate_gradient(A, b, x, n, info);
+    } else if (strcmp(method, "conjugate_residual") == 0) {
+        result = conjugate_residual(A, b, x, n, info);
+    } else if (strcmp(method, "symmlq") == 0) {
+        result = symmlq(A, b, x, n, info);
+    } else if (strcmp(method, "chebyshev") == 0) {
+        result = chebyshev(A, b, x, n, info);
     } else {
         // Method not recognized
         set_info(info, 0, NAN, SOLVER_INPUT_ERROR);
