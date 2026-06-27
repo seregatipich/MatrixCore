@@ -43,7 +43,18 @@ def test_rank_deficient_is_rejected(method):
 
 
 @pytest.mark.parametrize(
-    "method", ["minres", "eigenvalue_decomposition", "conjugate_gradient", "gradient_descent"]
+    "method",
+    [
+        "minres",
+        "eigenvalue_decomposition",
+        "conjugate_gradient",
+        "gradient_descent",
+        "ldlt",
+        "preconditioned_conjugate_gradient",
+        "conjugate_residual",
+        "symmlq",
+        "chebyshev",
+    ],
 )
 def test_non_symmetric_rejected_by_symmetric_solvers(method):
     A = np.array([[3.0, 1.0], [5.0, 3.0]])  # symmetric part is nonsingular

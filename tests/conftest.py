@@ -5,10 +5,23 @@ import pytest
 
 # Solvers that require a symmetric positive-definite (or at least symmetric) matrix.
 SPD_ONLY = frozenset(
-    {"cholesky", "conjugate_gradient", "gradient_descent", "minres", "eigenvalue_decomposition"}
+    {
+        "cholesky",
+        "conjugate_gradient",
+        "gradient_descent",
+        "minres",
+        "eigenvalue_decomposition",
+        "ldlt",
+        "preconditioned_conjugate_gradient",
+        "conjugate_residual",
+        "symmlq",
+        "chebyshev",
+    }
 )
 # Solvers that operate on a triangular matrix only.
 TRIANGULAR = {"back_substitution": "upper", "forward_substitution": "lower"}
+# Solvers that operate on a tridiagonal matrix only.
+TRIDIAGONAL_ONLY = frozenset({"thomas"})
 
 REL_TOL = 1e-5
 
@@ -48,7 +61,9 @@ def systems_for(method, n=6):
     if method in TRIANGULAR:
         A = upper_matrix(n) if TRIANGULAR[method] == "upper" else lower_matrix(n)
         return [(A, b)]
-    if method in SPD_ONLY:
+    if method in SPD_ONLY or method in TRIDIAGONAL_ONLY:
+        # spd_matrix is symmetric, positive-definite, and tridiagonal, so it
+        # satisfies both the SPD-only and tridiagonal-only solver requirements.
         return [(spd_matrix(n), b), (spd_matrix(4), np.array([2.0, -1.0, 0.5, 3.0]))]
     return [(spd_matrix(n), b), (general_matrix(n), b)]
 
