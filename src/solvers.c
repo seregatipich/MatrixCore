@@ -4087,10 +4087,9 @@ int bicgstab(double *A, double *b, double *x, int n, solver_info *info) {
             ts += t[i] * s[i];
         }
         if (tt < 1e-30) {
-            for (int i = 0; i < n; i++) {
-                x[i] += alpha * p[i];
-            }
-            result = SOLVER_SUCCESS;
+            // A*s vanished while s is not yet small (s_norm >= TOLERANCE above):
+            // a BiCGSTAB breakdown on a (near-)singular system, not convergence.
+            result = SOLVER_NOT_CONVERGED;
             break;
         }
         omega = ts / tt;
@@ -4822,8 +4821,9 @@ int lsqr(double *A, double *b, double *x, int n, solver_info *info) {
     alpha = sqrt(alpha);
 
     if (alpha < 1e-30) {
-        // A^T b = 0: nothing to drive the solution, leave x = 0
-        result = SOLVER_SUCCESS;
+        // A^T b = 0 with b != 0 means b is orthogonal to range(A): A is rank
+        // deficient, so the system has no unique solution.
+        result = SOLVER_SINGULAR_MATRIX;
         goto cleanup;
     }
 
