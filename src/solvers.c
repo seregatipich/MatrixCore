@@ -1168,14 +1168,16 @@ int jacobi(double *A, double *b, double *x, int n, solver_info *info) {
             x_new[i] = (b[i] - sum) / A[i * n + i];
         }
 
-        // Calculate residual and check convergence
+        // Calculate increment and check convergence relative to the solution scale.
         residual = 0.0;
+        double xnorm = 0.0;
         for (int i = 0; i < n; i++) {
             residual += fabs(x_new[i] - x[i]);
             x[i] = x_new[i];
+            xnorm += fabs(x[i]);
         }
 
-        if (residual < TOLERANCE) {
+        if (residual < TOLERANCE * (xnorm + 1.0)) {
             break;
         }
     }
@@ -1239,13 +1241,15 @@ int gauss_seidel(double *A, double *b, double *x, int n, solver_info *info) {
             x[i] = (b[i] - sum1 - sum2) / A[i * n + i];
         }
 
-        // Calculate residual and check convergence
+        // Calculate increment and check convergence relative to the solution scale.
         residual = 0.0;
+        double xnorm = 0.0;
         for (int i = 0; i < n; i++) {
             residual += fabs(x[i] - x_old[i]);
+            xnorm += fabs(x[i]);
         }
 
-        if (residual < TOLERANCE) {
+        if (residual < TOLERANCE * (xnorm + 1.0)) {
             break;
         }
     }
@@ -1268,7 +1272,8 @@ cleanup:
 
 /* Successive Over-Relaxation Method */
 int sor(double *A, double *b, double *x, int n, solver_info *info) {
-    // Recommended omega value (relaxation factor) between 1.0 and 2.0
+    // Over-relaxation (omega > 1) only converges reliably for symmetric positive
+    // definite systems; nonsymmetric matrices fall back to Gauss-Seidel (omega = 1).
     double omega = 1.5;
     int result = SOLVER_SUCCESS;
     int iter = 0;
@@ -1277,6 +1282,19 @@ int sor(double *A, double *b, double *x, int n, solver_info *info) {
     // Validate input parameters
     if (!A || !b || !x || n <= 0) {
         return SOLVER_INVALID_PARAM;
+    }
+
+    int is_symmetric = 1;
+    for (int i = 0; i < n && is_symmetric; i++) {
+        for (int j = 0; j < i; j++) {
+            if (fabs(A[i * n + j] - A[j * n + i]) > TOLERANCE) {
+                is_symmetric = 0;
+                break;
+            }
+        }
+    }
+    if (!is_symmetric) {
+        omega = 1.0;
     }
 
     // Initialize x with zeros
@@ -1318,13 +1336,15 @@ int sor(double *A, double *b, double *x, int n, solver_info *info) {
             x[i] = (1.0 - omega) * x_old[i] + (omega / A[i * n + i]) * (b[i] - sum1 - sum2);
         }
 
-        // Calculate residual and check convergence
+        // Calculate increment and check convergence relative to the solution scale.
         residual = 0.0;
+        double xnorm = 0.0;
         for (int i = 0; i < n; i++) {
             residual += fabs(x[i] - x_old[i]);
+            xnorm += fabs(x[i]);
         }
 
-        if (residual < TOLERANCE) {
+        if (residual < TOLERANCE * (xnorm + 1.0)) {
             break;
         }
     }
@@ -2103,6 +2123,13 @@ int iterative_refinement(double *A, double *b, double *x, int n, solver_info *in
         goto cleanup;
     }
 
+    double bnorm = 0.0;
+    for (int i = 0; i < n; i++) {
+        bnorm += b[i] * b[i];
+    }
+    bnorm = sqrt(bnorm);
+    double rtol = TOLERANCE * (bnorm + 1.0);
+
     // Iterative refinement loop
     for (iterations = 0; iterations < MAX_ITERATIONS; iterations++) {
         // Compute residual r = b - A*x
@@ -2121,7 +2148,7 @@ int iterative_refinement(double *A, double *b, double *x, int n, solver_info *in
         residual_norm = sqrt(residual_norm);
 
         // Check for convergence
-        if (residual_norm < TOLERANCE) {
+        if (residual_norm < rtol) {
             break;
         }
 
@@ -2138,7 +2165,7 @@ int iterative_refinement(double *A, double *b, double *x, int n, solver_info *in
     }
 
     // Exhausting the iteration budget without meeting tolerance is not success.
-    if (result == SOLVER_SUCCESS && iterations >= MAX_ITERATIONS && residual_norm >= TOLERANCE) {
+    if (result == SOLVER_SUCCESS && iterations >= MAX_ITERATIONS && residual_norm >= rtol) {
         result = SOLVER_NOT_CONVERGED;
     }
 
@@ -3293,17 +3320,21 @@ cleanup:
 
 /* Crout LU Decomposition */
 int crout(double *A, double *b, double *x, int n, solver_info *info) {
-    // Crout factorization: L lower-triangular (incl. diagonal), U unit upper-triangular.
+    // Crout factorization with partial pivoting: P A = L U, with L lower-triangular
+    // (including the diagonal) and U unit upper-triangular. Pivoting lets the method
+    // solve any nonsingular matrix, including ones with a zero leading entry.
     double *L = NULL;
     double *U = NULL;
     double *y = NULL;
+    int *piv = NULL;
     int result = SOLVER_SUCCESS;
 
     L = (double*)malloc(n * n * sizeof(double));
     U = (double*)malloc(n * n * sizeof(double));
     y = (double*)malloc(n * sizeof(double));
+    piv = (int*)malloc(n * sizeof(int));
 
-    if (!L || !U || !y) {
+    if (!L || !U || !y || !piv) {
         result = SOLVER_MEMORY_ERROR;
         goto cleanup;
     }
@@ -3312,23 +3343,46 @@ int crout(double *A, double *b, double *x, int n, solver_info *info) {
         L[i] = 0.0;
         U[i] = 0.0;
     }
+    for (int i = 0; i < n; i++) {
+        piv[i] = i;
+    }
 
     for (int j = 0; j < n; j++) {
         for (int i = j; i < n; i++) {
-            double sum = A[i * n + j];
+            double sum = A[piv[i] * n + j];
             for (int k = 0; k < j; k++) {
                 sum -= L[i * n + k] * U[k * n + j];
             }
             L[i * n + j] = sum;
         }
 
-        if (fabs(L[j * n + j]) < TOLERANCE) {
+        int pivot_row = j;
+        double pivot_mag = fabs(L[j * n + j]);
+        for (int i = j + 1; i < n; i++) {
+            if (fabs(L[i * n + j]) > pivot_mag) {
+                pivot_mag = fabs(L[i * n + j]);
+                pivot_row = i;
+            }
+        }
+
+        if (pivot_mag < TOLERANCE) {
             result = SOLVER_SINGULAR_MATRIX;
             goto cleanup;
         }
 
+        if (pivot_row != j) {
+            int tmp_piv = piv[j];
+            piv[j] = piv[pivot_row];
+            piv[pivot_row] = tmp_piv;
+            for (int k = 0; k < n; k++) {
+                double tmp = L[j * n + k];
+                L[j * n + k] = L[pivot_row * n + k];
+                L[pivot_row * n + k] = tmp;
+            }
+        }
+
         for (int i = j + 1; i < n; i++) {
-            double sum = A[j * n + i];
+            double sum = A[piv[j] * n + i];
             for (int k = 0; k < j; k++) {
                 sum -= L[j * n + k] * U[k * n + i];
             }
@@ -3338,7 +3392,7 @@ int crout(double *A, double *b, double *x, int n, solver_info *info) {
     }
 
     for (int i = 0; i < n; i++) {
-        double sum = b[i];
+        double sum = b[piv[i]];
         for (int k = 0; k < i; k++) {
             sum -= L[i * n + k] * y[k];
         }
@@ -3357,6 +3411,7 @@ cleanup:
     free(L);
     free(U);
     free(y);
+    free(piv);
 
     set_info(info, 0, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
     return result;
@@ -3849,6 +3904,86 @@ cleanup:
     return result;
 }
 
+/* Smallest and largest eigenvalues of a symmetric matrix via cyclic Jacobi.
+ * Returns SOLVER_SUCCESS on convergence; the eigenvectors are not accumulated. */
+static int symmetric_eig_bounds(const double *A, int n, double *lambda_min, double *lambda_max) {
+    double *M = (double*)malloc((size_t)n * n * sizeof(double));
+    if (!M) {
+        return SOLVER_MEMORY_ERROR;
+    }
+    memcpy(M, A, (size_t)n * n * sizeof(double));
+
+    const int max_sweeps = 100;
+    int converged = 0;
+    for (int sweep = 0; sweep < max_sweeps; sweep++) {
+        double off = 0.0;
+        for (int p = 0; p < n - 1; p++) {
+            for (int q = p + 1; q < n; q++) {
+                off += M[p * n + q] * M[p * n + q];
+            }
+        }
+        if (off < 1e-24) {
+            converged = 1;
+            break;
+        }
+
+        for (int p = 0; p < n - 1; p++) {
+            for (int q = p + 1; q < n; q++) {
+                double apq = M[p * n + q];
+                if (apq == 0.0) {
+                    continue;
+                }
+                double app = M[p * n + p];
+                double aqq = M[q * n + q];
+                double theta = (aqq - app) / (2.0 * apq);
+                double t = (theta >= 0.0)
+                    ? 1.0 / (theta + sqrt(theta * theta + 1.0))
+                    : -1.0 / (-theta + sqrt(theta * theta + 1.0));
+                double c = 1.0 / sqrt(t * t + 1.0);
+                double s = t * c;
+                double h = t * apq;
+
+                M[p * n + p] = app - h;
+                M[q * n + q] = aqq + h;
+                M[p * n + q] = 0.0;
+                M[q * n + p] = 0.0;
+
+                for (int i = 0; i < n; i++) {
+                    if (i != p && i != q) {
+                        double aip = M[i * n + p];
+                        double aiq = M[i * n + q];
+                        M[i * n + p] = c * aip - s * aiq;
+                        M[p * n + i] = M[i * n + p];
+                        M[i * n + q] = s * aip + c * aiq;
+                        M[q * n + i] = M[i * n + q];
+                    }
+                }
+            }
+        }
+    }
+
+    if (!converged) {
+        free(M);
+        return SOLVER_NOT_CONVERGED;
+    }
+
+    double lo = M[0];
+    double hi = M[0];
+    for (int i = 1; i < n; i++) {
+        double diagonal = M[i * n + i];
+        if (diagonal < lo) {
+            lo = diagonal;
+        }
+        if (diagonal > hi) {
+            hi = diagonal;
+        }
+    }
+    free(M);
+    *lambda_min = lo;
+    *lambda_max = hi;
+    return SOLVER_SUCCESS;
+}
+
 /* Richardson Iteration */
 int richardson(double *A, double *b, double *x, int n, solver_info *info) {
     double *r = (double*)malloc(n * sizeof(double));
@@ -3882,7 +4017,33 @@ int richardson(double *A, double *b, double *x, int n, solver_info *info) {
         goto cleanup;
     }
 
+    // The optimal fixed step for a symmetric positive-definite system is
+    // 2 / (lambda_min + lambda_max); fall back to the Gershgorin bound otherwise.
     double omega = 1.0 / gershgorin_bound;
+    int is_symmetric = 1;
+    for (int i = 0; i < n && is_symmetric; i++) {
+        for (int j = 0; j < i; j++) {
+            if (fabs(A[i * n + j] - A[j * n + i]) > TOLERANCE) {
+                is_symmetric = 0;
+                break;
+            }
+        }
+    }
+    if (is_symmetric) {
+        double lambda_min = 0.0;
+        double lambda_max = 0.0;
+        if (symmetric_eig_bounds(A, n, &lambda_min, &lambda_max) == SOLVER_SUCCESS
+            && lambda_min > 0.0 && lambda_max > 0.0) {
+            omega = 2.0 / (lambda_min + lambda_max);
+        }
+    }
+
+    double bnorm = 0.0;
+    for (int i = 0; i < n; i++) {
+        bnorm += b[i] * b[i];
+    }
+    bnorm = sqrt(bnorm);
+    double rtol = TOLERANCE * (bnorm + 1.0);
 
     for (iter = 0; iter < MAX_ITERATIONS; iter++) {
         // Residual r = b - A x
@@ -3897,7 +4058,7 @@ int richardson(double *A, double *b, double *x, int n, solver_info *info) {
         }
         residual = sqrt(residual);
 
-        if (residual < TOLERANCE) {
+        if (residual < rtol) {
             break;
         }
 
@@ -3942,6 +4103,13 @@ int ssor(double *A, double *b, double *x, int n, solver_info *info) {
         x[i] = 0.0;
     }
 
+    double bnorm = 0.0;
+    for (int i = 0; i < n; i++) {
+        bnorm += b[i] * b[i];
+    }
+    bnorm = sqrt(bnorm);
+    double rtol = TOLERANCE * (bnorm + 1.0);
+
     for (iter = 0; iter < MAX_ITERATIONS; iter++) {
         for (int i = 0; i < n; i++) {
             double sigma = 0.0;
@@ -3964,12 +4132,12 @@ int ssor(double *A, double *b, double *x, int n, solver_info *info) {
         }
 
         rn = residual_norm(A, b, x, n);
-        if (rn < TOLERANCE) {
+        if (rn < rtol) {
             break;
         }
     }
 
-    if (iter >= MAX_ITERATIONS && rn >= TOLERANCE) {
+    if (iter >= MAX_ITERATIONS && rn >= rtol) {
         result = SOLVER_NOT_CONVERGED;
     }
 
@@ -3991,6 +4159,7 @@ int bicgstab(double *A, double *b, double *x, int n, solver_info *info) {
 
     double rho = 1.0, rho_new = 0.0, alpha = 1.0, omega = 1.0, beta = 0.0;
     int iter = 0;
+    int just_restarted = 0;
     int result = SOLVER_SUCCESS;
 
     double *memory_block = (double*)malloc(6 * n * sizeof(double));
@@ -4019,17 +4188,43 @@ int bicgstab(double *A, double *b, double *x, int n, solver_info *info) {
         v[i] = 0.0;
     }
 
+    double bnorm = 0.0;
+    for (int i = 0; i < n; i++) {
+        bnorm += b[i] * b[i];
+    }
+    bnorm = sqrt(bnorm);
+    double rtol = TOLERANCE * (bnorm + 1.0);
+    if (bnorm < rtol) {
+        result = SOLVER_SUCCESS;
+        goto cleanup;
+    }
+
     for (iter = 0; iter < MAX_ITERATIONS; iter++) {
         rho_new = 0.0;
         for (int i = 0; i < n; i++) {
             rho_new += r_hat[i] * r[i];
         }
         if (fabs(rho_new) < 1e-30) {
-            result = SOLVER_NOT_CONVERGED;
-            break;
+            // BiCGSTAB breakdown: refresh the shadow residual and restart the recurrence.
+            for (int i = 0; i < n; i++) {
+                r_hat[i] = r[i];
+            }
+            rho = 1.0;
+            alpha = 1.0;
+            omega = 1.0;
+            just_restarted = 1;
+            rho_new = 0.0;
+            for (int i = 0; i < n; i++) {
+                rho_new += r_hat[i] * r[i];
+            }
+            if (fabs(rho_new) < 1e-30) {
+                result = SOLVER_NOT_CONVERGED;
+                break;
+            }
         }
 
-        if (iter == 0) {
+        if (iter == 0 || just_restarted) {
+            just_restarted = 0;
             for (int i = 0; i < n; i++) {
                 p[i] = r[i];
             }
@@ -4066,7 +4261,7 @@ int bicgstab(double *A, double *b, double *x, int n, solver_info *info) {
             s_norm += s[i] * s[i];
         }
         s_norm = sqrt(s_norm);
-        if (s_norm < TOLERANCE) {
+        if (s_norm < rtol) {
             for (int i = 0; i < n; i++) {
                 x[i] += alpha * p[i];
             }
@@ -4106,7 +4301,7 @@ int bicgstab(double *A, double *b, double *x, int n, solver_info *info) {
             r_norm += r[i] * r[i];
         }
         r_norm = sqrt(r_norm);
-        if (r_norm < TOLERANCE) {
+        if (r_norm < rtol) {
             result = SOLVER_SUCCESS;
             break;
         }
@@ -4483,8 +4678,9 @@ int qmr(double *A, double *b, double *x, int n, solver_info *info) {
     rho = sqrt(rho);
     xi = sqrt(xi);
 
+    double rtol = TOLERANCE * (rho + 1.0);
     double res_norm = rho;
-    if (res_norm < TOLERANCE) {
+    if (res_norm < rtol) {
         result = SOLVER_SUCCESS;
         goto cleanup;
     }
@@ -4601,7 +4797,7 @@ int qmr(double *A, double *b, double *x, int n, solver_info *info) {
         }
         res_norm = sqrt(res_norm);
 
-        if (res_norm < TOLERANCE) {
+        if (res_norm < rtol) {
             result = SOLVER_SUCCESS;
             iterations_done = iter + 1;
             goto cleanup;
@@ -4669,13 +4865,20 @@ int gcr(double *A, double *b, double *x, int n, solver_info *info) {
         r[i] = b[i];
     }
 
+    double bnorm = 0.0;
+    for (int i = 0; i < n; i++) {
+        bnorm += b[i] * b[i];
+    }
+    bnorm = sqrt(bnorm);
+    double rtol = TOLERANCE * (bnorm + 1.0);
+
     for (int iter = 0; iter < MAX_ITERATIONS; iter++) {
         double r_norm = 0.0;
         for (int i = 0; i < n; i++) {
             r_norm += r[i] * r[i];
         }
         r_norm = sqrt(r_norm);
-        if (r_norm < TOLERANCE) {
+        if (r_norm < rtol) {
             converged = 1;
             break;
         }
@@ -4739,7 +4942,7 @@ int gcr(double *A, double *b, double *x, int n, solver_info *info) {
             final_norm += r[i] * r[i];
         }
         final_norm = sqrt(final_norm);
-        if (final_norm < TOLERANCE) {
+        if (final_norm < rtol) {
             converged = 1;
         }
     }
@@ -4956,6 +5159,18 @@ int cgnr(double *A, double *b, double *x, int n, solver_info *info) {
         r[i] = b[i];
     }
 
+    double bnorm = 0.0;
+    for (int i = 0; i < n; i++) {
+        bnorm += b[i] * b[i];
+    }
+    bnorm = sqrt(bnorm);
+    double rtol = TOLERANCE * (bnorm + 1.0);
+    if (bnorm < rtol) {
+        result = SOLVER_SUCCESS;
+        iterations_done = 0;
+        goto cleanup;
+    }
+
     // s = A^T r, p = s
     for (int j = 0; j < n; j++) {
         double sum = 0.0;
@@ -5006,7 +5221,7 @@ int cgnr(double *A, double *b, double *x, int n, solver_info *info) {
             r_dot_r += r[i] * r[i];
         }
 
-        if (sqrt(r_dot_r) < TOLERANCE) {
+        if (sqrt(r_dot_r) < rtol) {
             result = SOLVER_SUCCESS;
             iterations_done = iter + 1;
             goto cleanup;
@@ -5377,7 +5592,8 @@ int symmlq(double *A, double *b, double *x, int n, solver_info *info) {
     }
     beta1 = sqrt(beta1);
 
-    if (beta1 < TOLERANCE) {
+    double rtol = TOLERANCE * (beta1 + 1.0);
+    if (beta1 < rtol) {
         result = SOLVER_SUCCESS;
         goto cleanup;
     }
@@ -5428,7 +5644,7 @@ int symmlq(double *A, double *b, double *x, int n, solver_info *info) {
             }
         }
         steps = 1;
-        result = (residual_norm(A, b, x, n) < TOLERANCE) ? SOLVER_SUCCESS : SOLVER_NOT_CONVERGED;
+        result = (residual_norm(A, b, x, n) < rtol) ? SOLVER_SUCCESS : SOLVER_NOT_CONVERGED;
         goto cleanup;
     }
 
@@ -5495,17 +5711,17 @@ int symmlq(double *A, double *b, double *x, int n, solver_info *info) {
 
         steps++;
 
-        if (residual_norm(A, b, x, n) < TOLERANCE) {
+        if (residual_norm(A, b, x, n) < rtol) {
             result = SOLVER_SUCCESS;
             goto cleanup;
         }
         if (beta < 1e-30) {
-            result = (residual_norm(A, b, x, n) < TOLERANCE) ? SOLVER_SUCCESS : SOLVER_NOT_CONVERGED;
+            result = (residual_norm(A, b, x, n) < rtol) ? SOLVER_SUCCESS : SOLVER_NOT_CONVERGED;
             goto cleanup;
         }
     }
 
-    result = (residual_norm(A, b, x, n) < TOLERANCE) ? SOLVER_SUCCESS : SOLVER_NOT_CONVERGED;
+    result = (residual_norm(A, b, x, n) < rtol) ? SOLVER_SUCCESS : SOLVER_NOT_CONVERGED;
 
 cleanup:
     free(r1);
@@ -5535,31 +5751,20 @@ int chebyshev(double *A, double *b, double *x, int n, solver_info *info) {
         }
     }
 
+    // Chebyshev needs the spectral interval [lambda_min, lambda_max]; accurate
+    // eigenvalue bounds (vs. loose Gershgorin disks) are essential for convergence
+    // on dense systems whose true condition number is far below the disk estimate.
     double lambda_min = 0.0;
     double lambda_max = 0.0;
-    for (int i = 0; i < n; i++) {
-        double rad = 0.0;
-        for (int j = 0; j < n; j++) {
-            if (j != i) {
-                rad += fabs(A[i * n + j]);
-            }
-        }
-        double lo = A[i * n + i] - rad;
-        double hi = A[i * n + i] + rad;
-        if (i == 0 || lo < lambda_min) {
-            lambda_min = lo;
-        }
-        if (i == 0 || hi > lambda_max) {
-            lambda_max = hi;
-        }
-    }
-
-    if (lambda_max <= 0.0) {
-        result = SOLVER_NOT_SPD_MATRIX;
+    int bounds_status = symmetric_eig_bounds(A, n, &lambda_min, &lambda_max);
+    if (bounds_status != SOLVER_SUCCESS) {
+        result = bounds_status;
         goto cleanup;
     }
-    if (lambda_min <= 0.0) {
-        lambda_min = lambda_max * 1e-6;
+
+    if (lambda_min <= 0.0 || lambda_max <= 0.0) {
+        result = SOLVER_NOT_SPD_MATRIX;
+        goto cleanup;
     }
     if (lambda_max <= lambda_min) {
         lambda_max = lambda_min * (1.0 + 1e-6);
