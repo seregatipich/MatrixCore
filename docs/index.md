@@ -23,6 +23,7 @@ x = solve_system(A, b, method="cholesky")
 
 tutorial
 api
+changelog
 ```
 
 ## Indices
