@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — solver robustness
+## 0.2.1 — solver robustness
 
 Adversarial stress testing of all 50 solvers surfaced a set of convergence and
 pivoting defects, all now fixed in the C core:
