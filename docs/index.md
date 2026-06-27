@@ -1,6 +1,6 @@
 # MatrixCore
 
-**MatrixCore** solves dense linear systems `Ax = b` using **30 solvers written
+**MatrixCore** solves dense linear systems `Ax = b` using **50 solvers written
 from scratch in C**. The numerical core depends only on the C standard library;
 NumPy and SciPy are used solely for the Python interface and file I/O.
 

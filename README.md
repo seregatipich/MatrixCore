@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 **MatrixCore** is a Python library for solving dense systems of linear equations
-`Ax = b`, backed by **30 solvers written from scratch in C**. The numerical core
+`Ax = b`, backed by **50 solvers written from scratch in C**. The numerical core
 depends only on the C standard library (`libm`); NumPy and SciPy are used purely
 for the Python interface and matrix file I/O, never for the solve itself.
 
@@ -18,7 +18,7 @@ for the Python interface and matrix file I/O, never for the solve itself.
 
 ## Features
 
-- Solve `Ax = b` for dense square matrices with 30 selectable algorithms
+- Solve `Ax = b` for dense square matrices with 50 selectable algorithms
 - A pure-C backend (direct, iterative, and decomposition-based methods)
 - A clean Cython/NumPy interface with input coercion and typed exceptions
 - Automatic solver recommendation from matrix diagnostics
@@ -69,7 +69,7 @@ C-contiguous `float64` array.
 from matrixcore import recommend_solver, list_available_solvers
 
 recommend_solver(A)        # e.g. 'cholesky' for an SPD matrix
-list_available_solvers()   # all 30 method names
+list_available_solvers()   # all 50 method names
 ```
 
 ## Matrix file I/O
@@ -115,22 +115,29 @@ except SingularMatrixError:
 
 ## Available solvers
 
-**Direct:** `gaussian_elimination`, `gauss_jordan`, `back_substitution`,
-`forward_substitution`, `lu_decomposition`, `cholesky`, `qr_decomposition`,
-`matrix_inversion`, `cramers_rule`, `row_echelon`, `reduced_row_echelon`,
-`triangularization`
+**Direct & decomposition:** `gaussian_elimination`, `gauss_jordan`,
+`back_substitution`, `forward_substitution`, `lu_decomposition`, `crout`,
+`cholesky`, `ldlt`, `qr_decomposition`, `givens_qr`, `modified_gram_schmidt`,
+`classical_gram_schmidt`, `lq_decomposition`, `matrix_inversion`, `cramers_rule`,
+`row_echelon`, `reduced_row_echelon`, `triangularization`, `thomas`
 
-**Iterative:** `jacobi`, `gauss_seidel`, `sor`, `conjugate_gradient`,
-`gradient_descent`, `minres`, `gmres`, `bicg`, `iterative_refinement`
+**Stationary iterative:** `jacobi`, `gauss_seidel`, `sor`, `ssor`, `richardson`,
+`iterative_refinement`
+
+**Krylov / semi-iterative:** `conjugate_gradient`, `preconditioned_conjugate_gradient`,
+`gradient_descent`, `conjugate_residual`, `minres`, `symmlq`, `chebyshev`, `gmres`,
+`gcr`, `bicg`, `bicgstab`, `cgs`, `tfqmr`, `qmr`, `lsqr`, `cgnr`
 
 **Specialized:** `normal_equations`, `orthogonal_projection`, `svd`,
 `pseudoinverse`, `block_matrix`, `partitioning`, `matrix_rank`, `determinant`,
 `eigenvalue_decomposition`
 
-Some methods require a particular matrix structure (`cholesky`,
-`conjugate_gradient`, `gradient_descent`, `minres`, and
-`eigenvalue_decomposition` require a symmetric positive-definite matrix;
-`back_substitution` / `forward_substitution` require a triangular matrix).
+Some methods require a particular matrix structure. `cholesky`, `ldlt`,
+`conjugate_gradient`, `preconditioned_conjugate_gradient`, `conjugate_residual`,
+`gradient_descent`, `minres`, `symmlq`, `chebyshev`, and `eigenvalue_decomposition`
+require a symmetric positive-definite matrix; `back_substitution` /
+`forward_substitution` require a triangular matrix; `thomas` requires a
+tridiagonal matrix.
 
 ## Project structure
 
@@ -143,7 +150,7 @@ MatrixCore/
 │   ├── exceptions.py      # Exception hierarchy + error-code mapping
 │   └── io/                # mtx / matlab / rb readers and writers
 ├── src/
-│   ├── solvers.c          # 30 solvers, written from scratch in C
+│   ├── solvers.c          # 50 solvers, written from scratch in C
 │   └── solvers.h          # C API and error codes
 ├── tests/                 # pytest + Hypothesis suite
 ├── examples/              # runnable usage examples

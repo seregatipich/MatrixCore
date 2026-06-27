@@ -49,6 +49,26 @@ cdef extern from "solvers.h":
     int matrix_rank(double *A, double *b, double *x, int n, solver_info *info)
     int determinant(double *A, double *b, double *x, int n, solver_info *info)
     int eigenvalue_decomposition(double *A, double *b, double *x, int n, solver_info *info)
+    int crout(double *A, double *b, double *x, int n, solver_info *info)
+    int ldlt(double *A, double *b, double *x, int n, solver_info *info)
+    int thomas(double *A, double *b, double *x, int n, solver_info *info)
+    int givens_qr(double *A, double *b, double *x, int n, solver_info *info)
+    int modified_gram_schmidt(double *A, double *b, double *x, int n, solver_info *info)
+    int classical_gram_schmidt(double *A, double *b, double *x, int n, solver_info *info)
+    int lq_decomposition(double *A, double *b, double *x, int n, solver_info *info)
+    int richardson(double *A, double *b, double *x, int n, solver_info *info)
+    int ssor(double *A, double *b, double *x, int n, solver_info *info)
+    int bicgstab(double *A, double *b, double *x, int n, solver_info *info)
+    int cgs(double *A, double *b, double *x, int n, solver_info *info)
+    int tfqmr(double *A, double *b, double *x, int n, solver_info *info)
+    int qmr(double *A, double *b, double *x, int n, solver_info *info)
+    int gcr(double *A, double *b, double *x, int n, solver_info *info)
+    int lsqr(double *A, double *b, double *x, int n, solver_info *info)
+    int cgnr(double *A, double *b, double *x, int n, solver_info *info)
+    int preconditioned_conjugate_gradient(double *A, double *b, double *x, int n, solver_info *info)
+    int conjugate_residual(double *A, double *b, double *x, int n, solver_info *info)
+    int symmlq(double *A, double *b, double *x, int n, solver_info *info)
+    int chebyshev(double *A, double *b, double *x, int n, solver_info *info)
 
     # Import the main solver function
     int solve_linear_system(double *A, double *b, double *x, int n, const char *method, solver_info *info) nogil
@@ -177,7 +197,27 @@ def list_available_solvers():
         'partitioning',
         'matrix_rank',
         'determinant',
-        'eigenvalue_decomposition'
+        'eigenvalue_decomposition',
+        'crout',
+        'ldlt',
+        'thomas',
+        'givens_qr',
+        'modified_gram_schmidt',
+        'classical_gram_schmidt',
+        'lq_decomposition',
+        'richardson',
+        'ssor',
+        'bicgstab',
+        'cgs',
+        'tfqmr',
+        'qmr',
+        'gcr',
+        'lsqr',
+        'cgnr',
+        'preconditioned_conjugate_gradient',
+        'conjugate_residual',
+        'symmlq',
+        'chebyshev',
     ]
 
 def gaussian_elimination_solver(np.ndarray[double, ndim=2, mode="c"] A,
@@ -359,3 +399,123 @@ def eigenvalue_decomposition_solver(np.ndarray[double, ndim=2, mode="c"] A,
                                     return_info=False):
     """Solve a linear system using Eigenvalue Decomposition method."""
     return solve_system(A, b, method='eigenvalue_decomposition', return_info=return_info)
+
+def crout_solver(np.ndarray[double, ndim=2, mode="c"] A,
+                  np.ndarray[double, ndim=1, mode="c"] b,
+                  return_info=False):
+    """Solve a linear system using Crout LU Decomposition."""
+    return solve_system(A, b, method='crout', return_info=return_info)
+
+def ldlt_solver(np.ndarray[double, ndim=2, mode="c"] A,
+                  np.ndarray[double, ndim=1, mode="c"] b,
+                  return_info=False):
+    """Solve a linear system using LDL^T Decomposition."""
+    return solve_system(A, b, method='ldlt', return_info=return_info)
+
+def thomas_solver(np.ndarray[double, ndim=2, mode="c"] A,
+                  np.ndarray[double, ndim=1, mode="c"] b,
+                  return_info=False):
+    """Solve a linear system using Thomas Algorithm (tridiagonal)."""
+    return solve_system(A, b, method='thomas', return_info=return_info)
+
+def givens_qr_solver(np.ndarray[double, ndim=2, mode="c"] A,
+                  np.ndarray[double, ndim=1, mode="c"] b,
+                  return_info=False):
+    """Solve a linear system using QR Decomposition via Givens Rotations."""
+    return solve_system(A, b, method='givens_qr', return_info=return_info)
+
+def modified_gram_schmidt_solver(np.ndarray[double, ndim=2, mode="c"] A,
+                  np.ndarray[double, ndim=1, mode="c"] b,
+                  return_info=False):
+    """Solve a linear system using Modified Gram-Schmidt QR."""
+    return solve_system(A, b, method='modified_gram_schmidt', return_info=return_info)
+
+def classical_gram_schmidt_solver(np.ndarray[double, ndim=2, mode="c"] A,
+                  np.ndarray[double, ndim=1, mode="c"] b,
+                  return_info=False):
+    """Solve a linear system using Classical Gram-Schmidt QR."""
+    return solve_system(A, b, method='classical_gram_schmidt', return_info=return_info)
+
+def lq_decomposition_solver(np.ndarray[double, ndim=2, mode="c"] A,
+                  np.ndarray[double, ndim=1, mode="c"] b,
+                  return_info=False):
+    """Solve a linear system using LQ Decomposition."""
+    return solve_system(A, b, method='lq_decomposition', return_info=return_info)
+
+def richardson_solver(np.ndarray[double, ndim=2, mode="c"] A,
+                  np.ndarray[double, ndim=1, mode="c"] b,
+                  return_info=False):
+    """Solve a linear system using Richardson Iteration."""
+    return solve_system(A, b, method='richardson', return_info=return_info)
+
+def ssor_solver(np.ndarray[double, ndim=2, mode="c"] A,
+                  np.ndarray[double, ndim=1, mode="c"] b,
+                  return_info=False):
+    """Solve a linear system using Symmetric Successive Over-Relaxation (SSOR)."""
+    return solve_system(A, b, method='ssor', return_info=return_info)
+
+def bicgstab_solver(np.ndarray[double, ndim=2, mode="c"] A,
+                  np.ndarray[double, ndim=1, mode="c"] b,
+                  return_info=False):
+    """Solve a linear system using BiCGSTAB."""
+    return solve_system(A, b, method='bicgstab', return_info=return_info)
+
+def cgs_solver(np.ndarray[double, ndim=2, mode="c"] A,
+                  np.ndarray[double, ndim=1, mode="c"] b,
+                  return_info=False):
+    """Solve a linear system using Conjugate Gradient Squared (CGS)."""
+    return solve_system(A, b, method='cgs', return_info=return_info)
+
+def tfqmr_solver(np.ndarray[double, ndim=2, mode="c"] A,
+                  np.ndarray[double, ndim=1, mode="c"] b,
+                  return_info=False):
+    """Solve a linear system using Transpose-Free QMR (TFQMR)."""
+    return solve_system(A, b, method='tfqmr', return_info=return_info)
+
+def qmr_solver(np.ndarray[double, ndim=2, mode="c"] A,
+                  np.ndarray[double, ndim=1, mode="c"] b,
+                  return_info=False):
+    """Solve a linear system using Quasi-Minimal Residual (QMR)."""
+    return solve_system(A, b, method='qmr', return_info=return_info)
+
+def gcr_solver(np.ndarray[double, ndim=2, mode="c"] A,
+                  np.ndarray[double, ndim=1, mode="c"] b,
+                  return_info=False):
+    """Solve a linear system using Generalized Conjugate Residual (GCR)."""
+    return solve_system(A, b, method='gcr', return_info=return_info)
+
+def lsqr_solver(np.ndarray[double, ndim=2, mode="c"] A,
+                  np.ndarray[double, ndim=1, mode="c"] b,
+                  return_info=False):
+    """Solve a linear system using LSQR."""
+    return solve_system(A, b, method='lsqr', return_info=return_info)
+
+def cgnr_solver(np.ndarray[double, ndim=2, mode="c"] A,
+                  np.ndarray[double, ndim=1, mode="c"] b,
+                  return_info=False):
+    """Solve a linear system using Conjugate Gradient on Normal Equations (CGNR)."""
+    return solve_system(A, b, method='cgnr', return_info=return_info)
+
+def preconditioned_conjugate_gradient_solver(np.ndarray[double, ndim=2, mode="c"] A,
+                  np.ndarray[double, ndim=1, mode="c"] b,
+                  return_info=False):
+    """Solve a linear system using Preconditioned Conjugate Gradient (Jacobi)."""
+    return solve_system(A, b, method='preconditioned_conjugate_gradient', return_info=return_info)
+
+def conjugate_residual_solver(np.ndarray[double, ndim=2, mode="c"] A,
+                  np.ndarray[double, ndim=1, mode="c"] b,
+                  return_info=False):
+    """Solve a linear system using Conjugate Residual."""
+    return solve_system(A, b, method='conjugate_residual', return_info=return_info)
+
+def symmlq_solver(np.ndarray[double, ndim=2, mode="c"] A,
+                  np.ndarray[double, ndim=1, mode="c"] b,
+                  return_info=False):
+    """Solve a linear system using SYMMLQ."""
+    return solve_system(A, b, method='symmlq', return_info=return_info)
+
+def chebyshev_solver(np.ndarray[double, ndim=2, mode="c"] A,
+                  np.ndarray[double, ndim=1, mode="c"] b,
+                  return_info=False):
+    """Solve a linear system using Chebyshev Semi-Iteration."""
+    return solve_system(A, b, method='chebyshev', return_info=return_info)

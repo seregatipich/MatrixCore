@@ -16,9 +16,9 @@ from tests.conftest import REL_TOL, spd_matrix, systems_for
 ALL_SOLVERS = list_available_solvers()
 
 
-def test_thirty_solvers_available():
-    assert len(ALL_SOLVERS) == 30
-    assert len(set(ALL_SOLVERS)) == 30
+def test_fifty_solvers_available():
+    assert len(ALL_SOLVERS) == 50
+    assert len(set(ALL_SOLVERS)) == 50
 
 
 @pytest.mark.parametrize("method", ALL_SOLVERS)
@@ -144,4 +144,63 @@ def test_cramers_rule_handles_larger_n(n):
     A = spd_matrix(n)
     b = np.arange(1.0, n + 1.0)
     x = solve_system(A, b, method="cramers_rule")
+    assert np.allclose(x, np.linalg.solve(A, b))
+
+
+@pytest.mark.parametrize(
+    "method",
+    ["bicgstab", "cgs", "tfqmr", "qmr", "gcr", "lsqr", "cgnr", "richardson", "ssor"],
+)
+@pytest.mark.parametrize("n", [4, 6, 10])
+def test_new_iterative_solvers_converge_on_general(method, n):
+    """New nonsymmetric/stationary iterative solvers converge on well-conditioned systems."""
+    from tests.conftest import general_matrix
+
+    rng = np.random.default_rng(n)
+    A = general_matrix(n, seed=n)
+    b = rng.uniform(-1.0, 1.0, size=n)
+    x, info = solve_system(A, b, method=method, return_info=True)
+    assert np.linalg.norm(A @ x - b) / np.linalg.norm(b) < 1e-6
+    assert info["iterations"] >= 0
+
+
+@pytest.mark.parametrize(
+    "method",
+    ["preconditioned_conjugate_gradient", "conjugate_residual", "symmlq", "chebyshev"],
+)
+@pytest.mark.parametrize("n", [4, 6, 10])
+def test_new_spd_iterative_solvers_converge(method, n):
+    """New SPD Krylov/semi-iterative solvers converge on SPD systems."""
+    A = spd_matrix(n)
+    b = np.arange(1.0, n + 1.0)
+    x = solve_system(A, b, method=method)
+    assert np.linalg.norm(A @ x - b) / np.linalg.norm(b) < 1e-6
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "crout",
+        "ldlt",
+        "givens_qr",
+        "modified_gram_schmidt",
+        "classical_gram_schmidt",
+        "lq_decomposition",
+    ],
+)
+@pytest.mark.parametrize("n", [3, 5, 8])
+def test_new_direct_solvers_match_numpy(method, n):
+    """New direct/decomposition solvers reproduce numpy on SPD systems of varied size."""
+    A = spd_matrix(n)
+    b = np.arange(1.0, n + 1.0)
+    x = solve_system(A, b, method=method)
+    assert np.allclose(x, np.linalg.solve(A, b))
+
+
+@pytest.mark.parametrize("n", [3, 5, 8, 12])
+def test_thomas_matches_numpy_on_tridiagonal(n):
+    """Thomas algorithm solves tridiagonal systems exactly."""
+    A = spd_matrix(n)
+    b = np.arange(1.0, n + 1.0)
+    x = solve_system(A, b, method="thomas")
     assert np.allclose(x, np.linalg.solve(A, b))
