@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "matrixcore"
-version = "0.2.0"
+version = "0.2.1"
 description = "Educational library of 50 hand-written C solvers for dense linear systems Ax = b, exposed through a Cython/NumPy interface."
 readme = "README.md"
 requires-python = ">=3.10"
