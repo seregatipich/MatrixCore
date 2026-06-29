@@ -39,14 +39,31 @@ static double residual_norm(const double *A, const double *b, const double *x, i
 /* Determinant of an n x n matrix via Gaussian elimination with partial pivoting.
    Works on an internal copy, leaving the caller's matrix untouched. Returns 0 on
    allocation failure (caller treats a zero determinant as singular). */
-static double matrix_determinant(const double *M, int n) {
-    double *work = (double*)malloc(n * n * sizeof(double));
-    if (!work) {
-        return 0.0;
+static double max_abs(const double *A, int n) {
+    double m = 0.0;
+    for (int i = 0; i < n * n; i++) {
+        double a = fabs(A[i]);
+        if (a > m) {
+            m = a;
+        }
     }
-    memcpy(work, M, n * n * sizeof(double));
+    return m;
+}
 
-    double det = 1.0;
+/* Log-determinant via LU with partial pivoting and a scale-relative singular test.
+ * Sets *sign to +/-1 (0 when singular) and *logabs to log|det|. Working in log space
+ * keeps the determinant ratio of Cramer's rule stable when |det| under/overflows. */
+static int matrix_logdet(const double *M, int n, double *sign, double *logabs) {
+    double *work = (double*)malloc((size_t)n * n * sizeof(double));
+    if (!work) {
+        return SOLVER_MEMORY_ERROR;
+    }
+    memcpy(work, M, (size_t)n * n * sizeof(double));
+
+    double threshold = TOLERANCE * max_abs(M, n);
+    double det_sign = 1.0;
+    double log_abs_det = 0.0;
+
     for (int k = 0; k < n; k++) {
         int pivot_row = k;
         double pivot_value = fabs(work[k * n + k]);
@@ -58,9 +75,11 @@ static double matrix_determinant(const double *M, int n) {
             }
         }
 
-        if (pivot_value < TOLERANCE) {
+        if (pivot_value <= threshold) {
             free(work);
-            return 0.0;
+            *sign = 0.0;
+            *logabs = -INFINITY;
+            return SOLVER_SINGULAR_MATRIX;
         }
 
         if (pivot_row != k) {
@@ -69,12 +88,17 @@ static double matrix_determinant(const double *M, int n) {
                 work[k * n + j] = work[pivot_row * n + j];
                 work[pivot_row * n + j] = temp;
             }
-            det = -det;
+            det_sign = -det_sign;
         }
 
-        det *= work[k * n + k];
+        double pivot = work[k * n + k];
+        if (pivot < 0.0) {
+            det_sign = -det_sign;
+        }
+        log_abs_det += log(fabs(pivot));
+
         for (int i = k + 1; i < n; i++) {
-            double factor = work[i * n + k] / work[k * n + k];
+            double factor = work[i * n + k] / pivot;
             for (int j = k + 1; j < n; j++) {
                 work[i * n + j] -= factor * work[k * n + j];
             }
@@ -82,7 +106,9 @@ static double matrix_determinant(const double *M, int n) {
     }
 
     free(work);
-    return det;
+    *sign = det_sign;
+    *logabs = log_abs_det;
+    return SOLVER_SUCCESS;
 }
 
 /* One-sided Jacobi SVD of a square matrix A (n x n).
@@ -191,6 +217,10 @@ int gaussian_elimination(double *A, double *b, double *x, int n, solver_info *in
         AUG(i, n) = b[i];  // Last column contains the right-hand side vector
     }
 
+    // Singularity is judged relative to the matrix scale so small-entry matrices
+    // are not misreported as singular.
+    double scale = max_abs(A, n);
+
     // Forward elimination with partial pivoting
     for (int k = 0; k < n - 1; k++) {
         // Find pivot element (partial pivoting)
@@ -215,7 +245,7 @@ int gaussian_elimination(double *A, double *b, double *x, int n, solver_info *in
         }
 
         // Check for singularity (pivot too small)
-        if (fabs(AUG(k, k)) < TOLERANCE) {
+        if (fabs(AUG(k, k)) <= TOLERANCE * scale) {
             result = SOLVER_SINGULAR_MATRIX;
             goto cleanup;
         }
@@ -233,7 +263,7 @@ int gaussian_elimination(double *A, double *b, double *x, int n, solver_info *in
     }
 
     // Check if the last pivot is too small (matrix is singular)
-    if (fabs(AUG(n-1, n-1)) < TOLERANCE) {
+    if (fabs(AUG(n-1, n-1)) <= TOLERANCE * scale) {
         result = SOLVER_SINGULAR_MATRIX;
         goto cleanup;
     }
@@ -283,6 +313,8 @@ int gauss_jordan(double *A, double *b, double *x, int n, solver_info *info) {
         AUG(i, n) = b[i];
     }
 
+    double scale = max_abs(A, n);
+
     // Gauss-Jordan elimination
     for (int k = 0; k < n; k++) {
         // Find pivot
@@ -306,7 +338,7 @@ int gauss_jordan(double *A, double *b, double *x, int n, solver_info *info) {
         }
 
         // Check for singularity
-        if (fabs(AUG(k, k)) < TOLERANCE) {
+        if (fabs(AUG(k, k)) <= TOLERANCE * scale) {
             result = SOLVER_SINGULAR_MATRIX;
             goto cleanup;
         }
@@ -348,6 +380,8 @@ cleanup:
 int back_substitution(double *A, double *b, double *x, int n, solver_info *info) {
     int result = SOLVER_SUCCESS;
 
+    double scale = max_abs(A, n);
+
     // Perform back substitution for upper triangular matrix
     for (int i = n - 1; i >= 0; i--) {
         x[i] = b[i];
@@ -355,7 +389,7 @@ int back_substitution(double *A, double *b, double *x, int n, solver_info *info)
             x[i] -= A[i * n + j] * x[j];
         }
 
-        if (fabs(A[i * n + i]) < TOLERANCE) {
+        if (fabs(A[i * n + i]) <= TOLERANCE * scale) {
             result = SOLVER_SINGULAR_MATRIX;
             goto cleanup;
         }
@@ -372,6 +406,8 @@ cleanup:
 int forward_substitution(double *A, double *b, double *x, int n, solver_info *info) {
     int result = SOLVER_SUCCESS;
 
+    double scale = max_abs(A, n);
+
     // Perform forward substitution for lower triangular matrix
     for (int i = 0; i < n; i++) {
         x[i] = b[i];
@@ -379,7 +415,7 @@ int forward_substitution(double *A, double *b, double *x, int n, solver_info *in
             x[i] -= A[i * n + j] * x[j];
         }
 
-        if (fabs(A[i * n + i]) < TOLERANCE) {
+        if (fabs(A[i * n + i]) <= TOLERANCE * scale) {
             result = SOLVER_SINGULAR_MATRIX;
             goto cleanup;
         }
@@ -416,6 +452,8 @@ int lu_decomposition(double *A, double *b, double *x, int n, solver_info *info) 
         piv[i] = i;
     }
 
+    double scale = max_abs(A, n);
+
     // Doolittle factorization with partial pivoting
     for (int k = 0; k < n; k++) {
         int pivot_row = k;
@@ -428,7 +466,7 @@ int lu_decomposition(double *A, double *b, double *x, int n, solver_info *info) 
             }
         }
 
-        if (pivot_value < TOLERANCE) {
+        if (pivot_value <= TOLERANCE * scale) {
             result = SOLVER_SINGULAR_MATRIX;
             goto cleanup;
         }
@@ -492,7 +530,8 @@ int cholesky(double *A, double *b, double *x, int n, solver_info *info) {
     // Check if matrix is symmetric
     for (int i = 0; i < n; i++) {
         for (int j = 0; j < i; j++) {
-            if (fabs(A[i * n + j] - A[j * n + i]) > TOLERANCE) {
+            if (fabs(A[i * n + j] - A[j * n + i]) >
+                TOLERANCE * (fabs(A[i * n + j]) + fabs(A[j * n + i]) + 1.0)) {
                 result = SOLVER_NOT_SPD_MATRIX;
                 goto cleanup;
             }
@@ -587,6 +626,7 @@ int qr_decomposition(double *A, double *b, double *x, int n, solver_info *info) 
 
     // Copy A to R initially
     memcpy(R, A, n * n * sizeof(double));
+    double scale = max_abs(A, n);
 
     // Initialize Q to identity matrix
     for (int i = 0; i < n; i++) {
@@ -617,8 +657,8 @@ int qr_decomposition(double *A, double *b, double *x, int n, solver_info *info) 
             norm_u_squared += R[i * n + k] * R[i * n + k];
         }
 
-        // Skip if the norm is too small (avoid division by near-zero)
-        if (norm_u_squared < TOLERANCE) {
+        // Skip if the norm is too small (avoid division by near-zero), relative to scale
+        if (norm_u_squared <= TOLERANCE * TOLERANCE * scale * scale) {
             continue;
         }
 
@@ -786,7 +826,6 @@ cleanup:
 int cramers_rule(double *A, double *b, double *x, int n, solver_info *info) {
     int result = SOLVER_SUCCESS;
     double *modified_matrix = NULL;
-    double det_A = 0.0;
 
     modified_matrix = (double*)malloc(n * n * sizeof(double));
     if (!modified_matrix) {
@@ -794,24 +833,30 @@ int cramers_rule(double *A, double *b, double *x, int n, solver_info *info) {
         goto cleanup;
     }
 
-    // Determinant of A via Gaussian elimination with partial pivoting
-    det_A = matrix_determinant(A, n);
-
-    // Check if A is singular (det(A) = 0)
-    if (fabs(det_A) < TOLERANCE) {
-        result = SOLVER_SINGULAR_MATRIX;
+    // Determinant of A in log space (stable when |det| under/overflows).
+    double sign_A = 0.0, logabs_A = 0.0;
+    result = matrix_logdet(A, n, &sign_A, &logabs_A);
+    if (result != SOLVER_SUCCESS) {
         goto cleanup;
     }
 
-    // For each variable, replace the i-th column with b and take the ratio of determinants
+    // For each variable, replace the i-th column with b and take the ratio of determinants.
     for (int i = 0; i < n; i++) {
         memcpy(modified_matrix, A, n * n * sizeof(double));
         for (int row = 0; row < n; row++) {
             modified_matrix[row * n + i] = b[row];
         }
 
-        double det_modified = matrix_determinant(modified_matrix, n);
-        x[i] = det_modified / det_A;
+        double sign_i = 0.0, logabs_i = 0.0;
+        int status_i = matrix_logdet(modified_matrix, n, &sign_i, &logabs_i);
+        if (status_i == SOLVER_SINGULAR_MATRIX) {
+            x[i] = 0.0;
+        } else if (status_i != SOLVER_SUCCESS) {
+            result = status_i;
+            goto cleanup;
+        } else {
+            x[i] = sign_i * sign_A * exp(logabs_i - logabs_A);
+        }
     }
 
 cleanup:
@@ -839,19 +884,25 @@ int row_echelon(double *A, double *b, double *x, int n, solver_info *info) {
         AUG(i, n) = b[i];
     }
 
+    double scale = max_abs(A, n);
+
     // Forward phase: Convert to row echelon form
     int lead = 0;
     for (int r = 0; r < n; r++) {
         if (lead >= n) break;
 
-        // Find the pivot row
+        // Find the pivot row by partial pivoting (largest magnitude in the column)
         int i = r;
-        while (i < n && fabs(AUG(i, lead)) < TOLERANCE) {
-            i++;
+        double best = fabs(AUG(r, lead));
+        for (int row = r + 1; row < n; row++) {
+            if (fabs(AUG(row, lead)) > best) {
+                best = fabs(AUG(row, lead));
+                i = row;
+            }
         }
 
-        if (i == n) {
-            // No pivot in this column, move to next column
+        if (best <= TOLERANCE * scale) {
+            // No usable pivot in this column, move to next column
             lead++;
             r--; // Redo this row with new lead
             continue;
@@ -868,7 +919,7 @@ int row_echelon(double *A, double *b, double *x, int n, solver_info *info) {
 
         // Scale the pivot row to have a leading 1
         double pivot = AUG(r, lead);
-        if (fabs(pivot) < TOLERANCE) {
+        if (fabs(pivot) <= TOLERANCE * scale) {
             result = SOLVER_SINGULAR_MATRIX;
             goto cleanup;
         }
@@ -908,7 +959,7 @@ int row_echelon(double *A, double *b, double *x, int n, solver_info *info) {
         for (int j = i + 1; j < n; j++) {
             x[i] -= AUG(i, j) * x[j];
         }
-        if (fabs(AUG(i, i)) > TOLERANCE) {
+        if (fabs(AUG(i, i)) > TOLERANCE * scale) {
             x[i] /= AUG(i, i);
         } else {
             result = SOLVER_SINGULAR_MATRIX;
@@ -949,20 +1000,26 @@ int reduced_row_echelon(double *A, double *b, double *x, int n, solver_info *inf
         AUG(i, n) = b[i];
     }
 
+    double scale = max_abs(A, n);
+
     // Forward phase: Convert to row echelon form
     int lead = 0;
     int rank = 0;
     for (int r = 0; r < n; r++) {
         if (lead >= n) break;
 
-        // Find the pivot row
+        // Find the pivot row by partial pivoting (largest magnitude in the column)
         int i = r;
-        while (i < n && fabs(AUG(i, lead)) < TOLERANCE) {
-            i++;
+        double best = fabs(AUG(r, lead));
+        for (int row = r + 1; row < n; row++) {
+            if (fabs(AUG(row, lead)) > best) {
+                best = fabs(AUG(row, lead));
+                i = row;
+            }
         }
 
-        if (i == n) {
-            // No pivot in this column, move to next column
+        if (best <= TOLERANCE * scale) {
+            // No usable pivot in this column, move to next column
             lead++;
             r--; // Redo this row with new lead
             continue;
@@ -979,7 +1036,7 @@ int reduced_row_echelon(double *A, double *b, double *x, int n, solver_info *inf
 
         // Scale the pivot row
         double pivot = AUG(r, lead);
-        if (fabs(pivot) < TOLERANCE) {
+        if (fabs(pivot) <= TOLERANCE * scale) {
             result = SOLVER_SINGULAR_MATRIX;
             goto cleanup;
         }
@@ -1059,6 +1116,8 @@ int triangularization(double *A, double *b, double *x, int n, solver_info *info)
         AUG(i, n) = b[i];
     }
 
+    double scale = max_abs(A, n);
+
     // Forward elimination to create upper triangular matrix
     for (int k = 0; k < n - 1; k++) {
         // Find pivot element (partial pivoting)
@@ -1083,7 +1142,7 @@ int triangularization(double *A, double *b, double *x, int n, solver_info *info)
         }
 
         // Check for singularity (pivot too small)
-        if (fabs(AUG(k, k)) < TOLERANCE) {
+        if (fabs(AUG(k, k)) <= TOLERANCE * scale) {
             result = SOLVER_SINGULAR_MATRIX;
             goto cleanup;
         }
@@ -1100,7 +1159,7 @@ int triangularization(double *A, double *b, double *x, int n, solver_info *info)
     }
 
     // Check if the last pivot is too small (matrix is singular)
-    if (fabs(AUG(n-1, n-1)) < TOLERANCE) {
+    if (fabs(AUG(n-1, n-1)) <= TOLERANCE * scale) {
         result = SOLVER_SINGULAR_MATRIX;
         goto cleanup;
     }
@@ -1287,7 +1346,8 @@ int sor(double *A, double *b, double *x, int n, solver_info *info) {
     int is_symmetric = 1;
     for (int i = 0; i < n && is_symmetric; i++) {
         for (int j = 0; j < i; j++) {
-            if (fabs(A[i * n + j] - A[j * n + i]) > TOLERANCE) {
+            if (fabs(A[i * n + j] - A[j * n + i]) >
+                TOLERANCE * (fabs(A[i * n + j]) + fabs(A[j * n + i]) + 1.0)) {
                 is_symmetric = 0;
                 break;
             }
@@ -1378,7 +1438,8 @@ int conjugate_gradient(double *A, double *b, double *x, int n, solver_info *info
     // Check matrix symmetry
     for (int i = 0; i < n; i++) {
         for (int j = 0; j < i; j++) {
-            if (fabs(A[i * n + j] - A[j * n + i]) > TOLERANCE) {
+            if (fabs(A[i * n + j] - A[j * n + i]) >
+                TOLERANCE * (fabs(A[i * n + j]) + fabs(A[j * n + i]) + 1.0)) {
                 result = SOLVER_NOT_SPD_MATRIX;
                 goto cleanup;
             }
@@ -1499,7 +1560,8 @@ int gradient_descent(double *A, double *b, double *x, int n, solver_info *info) 
     // Steepest descent for SPD systems requires a symmetric matrix.
     for (int i = 0; i < n; i++) {
         for (int j = 0; j < i; j++) {
-            if (fabs(A[i * n + j] - A[j * n + i]) > TOLERANCE) {
+            if (fabs(A[i * n + j] - A[j * n + i]) >
+                TOLERANCE * (fabs(A[i * n + j]) + fabs(A[j * n + i]) + 1.0)) {
                 result = SOLVER_NOT_SPD_MATRIX;
                 goto cleanup;
             }
@@ -1581,7 +1643,8 @@ int minres(double *A, double *b, double *x, int n, solver_info *info) {
     // The symmetric Lanczos recurrence below is only valid for symmetric A.
     for (int i = 0; i < n; i++) {
         for (int j = 0; j < i; j++) {
-            if (fabs(A[i * n + j] - A[j * n + i]) > TOLERANCE) {
+            if (fabs(A[i * n + j] - A[j * n + i]) >
+                TOLERANCE * (fabs(A[i * n + j]) + fabs(A[j * n + i]) + 1.0)) {
                 set_info(info, 0, NAN, SOLVER_NOT_SPD_MATRIX);
                 return SOLVER_NOT_SPD_MATRIX;
             }
@@ -3050,76 +3113,18 @@ int determinant(double *A, double *b, double *x, int n, solver_info *info) {
     }
 
     int result = SOLVER_SUCCESS;
-    double det_A = 0.0;
 
-    // Allocate memory for matrix copies
-    double *A_copy = (double*)malloc(n * n * sizeof(double));
+    // Allocate a working copy for the column-substituted matrices.
     double *temp_matrix = (double*)malloc(n * n * sizeof(double));
-
-    if (!A_copy || !temp_matrix) {
-        // Free any successfully allocated memory
-        if (A_copy) free(A_copy);
-        if (temp_matrix) free(temp_matrix);
+    if (!temp_matrix) {
         set_info(info, 0, NAN, SOLVER_MEMORY_ERROR);
         return SOLVER_MEMORY_ERROR;
     }
 
-    // Copy the original matrix A
-    memcpy(A_copy, A, n * n * sizeof(double));
-
-    // Calculate determinant of A using Gaussian elimination
-    double det = 1.0;
-
-    // Gaussian elimination with partial pivoting
-    for (int k = 0; k < n - 1; k++) {
-        // Find pivot
-        int pivot_row = k;
-        double pivot_value = fabs(A_copy[k * n + k]);
-
-        for (int i = k + 1; i < n; i++) {
-            if (fabs(A_copy[i * n + k]) > pivot_value) {
-                pivot_value = fabs(A_copy[i * n + k]);
-                pivot_row = i;
-            }
-        }
-
-        // Swap rows if needed
-        if (pivot_row != k) {
-            for (int j = k; j < n; j++) {
-                double temp = A_copy[k * n + j];
-                A_copy[k * n + j] = A_copy[pivot_row * n + j];
-                A_copy[pivot_row * n + j] = temp;
-            }
-            // Each row exchange changes the determinant sign
-            det = -det;
-        }
-
-        // Check for singularity
-        if (fabs(A_copy[k * n + k]) < TOLERANCE) {
-            result = SOLVER_SINGULAR_MATRIX;
-            goto cleanup;
-        }
-
-        // Eliminate entries below pivot
-        for (int i = k + 1; i < n; i++) {
-            double factor = A_copy[i * n + k] / A_copy[k * n + k];
-            A_copy[i * n + k] = 0.0;  // This element becomes zero
-
-            for (int j = k + 1; j < n; j++) {
-                A_copy[i * n + j] -= factor * A_copy[k * n + j];
-            }
-        }
-    }
-
-    // Calculate determinant as product of diagonal elements
-    det_A = det;
-    for (int i = 0; i < n; i++) {
-        det_A *= A_copy[i * n + i];
-    }
-
-    // Check if matrix is singular (determinant close to zero)
-    if (fabs(det_A) < TOLERANCE) {
-        result = SOLVER_SINGULAR_MATRIX;
+    // Determinant of A in log space (stable when |det| under/overflows).
+    double sign_A = 0.0, logabs_A = 0.0;
+    result = matrix_logdet(A, n, &sign_A, &logabs_A);
+    if (result != SOLVER_SUCCESS) {
         goto cleanup;
     }
 
@@ -3133,63 +3138,20 @@ int determinant(double *A, double *b, double *x, int n, solver_info *info) {
             temp_matrix[j * n + i] = b[j];
         }
 
-        // Calculate determinant of the modified matrix using Gaussian elimination
-        double det_i = 1.0;
-
-        // Gaussian elimination with partial pivoting
-        for (int k = 0; k < n - 1; k++) {
-            // Find pivot
-            int pivot_row = k;
-            double pivot_value = fabs(temp_matrix[k * n + k]);
-
-            for (int j = k + 1; j < n; j++) {
-                if (fabs(temp_matrix[j * n + k]) > pivot_value) {
-                    pivot_value = fabs(temp_matrix[j * n + k]);
-                    pivot_row = j;
-                }
-            }
-
-            // Swap rows if needed
-            if (pivot_row != k) {
-                for (int j = k; j < n; j++) {
-                    double temp = temp_matrix[k * n + j];
-                    temp_matrix[k * n + j] = temp_matrix[pivot_row * n + j];
-                    temp_matrix[pivot_row * n + j] = temp;
-                }
-                // Each row exchange changes the determinant sign
-                det_i = -det_i;
-            }
-
-            // Check for singularity (should not happen if det_A is not zero)
-            if (fabs(temp_matrix[k * n + k]) < TOLERANCE) {
-                // Just set det_i to 0 and continue - we'll handle this at division time
-                det_i = 0.0;
-                break;
-            }
-
-            // Eliminate entries below pivot
-            for (int j = k + 1; j < n; j++) {
-                double factor = temp_matrix[j * n + k] / temp_matrix[k * n + k];
-                temp_matrix[j * n + k] = 0.0;  // This element becomes zero
-
-                for (int m = k + 1; m < n; m++) {
-                    temp_matrix[j * n + m] -= factor * temp_matrix[k * n + m];
-                }
-            }
+        double sign_i = 0.0, logabs_i = 0.0;
+        int status_i = matrix_logdet(temp_matrix, n, &sign_i, &logabs_i);
+        if (status_i == SOLVER_SINGULAR_MATRIX) {
+            x[i] = 0.0;
+        } else if (status_i != SOLVER_SUCCESS) {
+            result = status_i;
+            goto cleanup;
+        } else {
+            x[i] = sign_i * sign_A * exp(logabs_i - logabs_A);
         }
-
-        // Calculate determinant as product of diagonal elements
-        for (int j = 0; j < n; j++) {
-            det_i *= temp_matrix[j * n + j];
-        }
-
-        // Calculate the solution component
-        x[i] = det_i / det_A;
     }
 
 cleanup:
     // Free allocated memory
-    free(A_copy);
     free(temp_matrix);
 
     set_info(info, 0, result == SOLVER_SUCCESS ? residual_norm(A, b, x, n) : NAN, result);
@@ -3205,7 +3167,8 @@ int eigenvalue_decomposition(double *A, double *b, double *x, int n, solver_info
     // silently returning a wrong spectrum.
     for (int i = 0; i < n; i++) {
         for (int j = 0; j < i; j++) {
-            if (fabs(A[i * n + j] - A[j * n + i]) > TOLERANCE) {
+            if (fabs(A[i * n + j] - A[j * n + i]) >
+                TOLERANCE * (fabs(A[i * n + j]) + fabs(A[j * n + i]) + 1.0)) {
                 set_info(info, 0, NAN, SOLVER_NOT_SPD_MATRIX);
                 return SOLVER_NOT_SPD_MATRIX;
             }
@@ -3428,7 +3391,8 @@ int ldlt(double *A, double *b, double *x, int n, solver_info *info) {
     // Check if matrix is symmetric
     for (int i = 0; i < n; i++) {
         for (int j = 0; j < i; j++) {
-            if (fabs(A[i * n + j] - A[j * n + i]) > TOLERANCE) {
+            if (fabs(A[i * n + j] - A[j * n + i]) >
+                TOLERANCE * (fabs(A[i * n + j]) + fabs(A[j * n + i]) + 1.0)) {
                 result = SOLVER_NOT_SPD_MATRIX;
                 goto cleanup;
             }
@@ -3799,6 +3763,8 @@ int lq_decomposition(double *A, double *b, double *x, int n, solver_info *info) 
         }
     }
 
+    double scale = max_abs(A, n);
+
     // Householder QR on B = Qb * Rb (Qb explicit, Rb upper)
     for (int k = 0; k < n - 1; k++) {
         // Compute column norm below and including the diagonal
@@ -3820,8 +3786,8 @@ int lq_decomposition(double *A, double *b, double *x, int n, solver_info *info) 
             norm_u_squared += Rb[i * n + k] * Rb[i * n + k];
         }
 
-        // Skip if the norm is too small (avoid division by near-zero)
-        if (norm_u_squared < TOLERANCE) {
+        // Skip if the norm is too small (avoid division by near-zero), relative to scale
+        if (norm_u_squared <= TOLERANCE * TOLERANCE * scale * scale) {
             continue;
         }
 
@@ -4023,7 +3989,8 @@ int richardson(double *A, double *b, double *x, int n, solver_info *info) {
     int is_symmetric = 1;
     for (int i = 0; i < n && is_symmetric; i++) {
         for (int j = 0; j < i; j++) {
-            if (fabs(A[i * n + j] - A[j * n + i]) > TOLERANCE) {
+            if (fabs(A[i * n + j] - A[j * n + i]) >
+                TOLERANCE * (fabs(A[i * n + j]) + fabs(A[j * n + i]) + 1.0)) {
                 is_symmetric = 0;
                 break;
             }
@@ -5278,7 +5245,8 @@ int preconditioned_conjugate_gradient(double *A, double *b, double *x, int n, so
     // Check matrix symmetry
     for (int i = 0; i < n; i++) {
         for (int j = 0; j < i; j++) {
-            if (fabs(A[i * n + j] - A[j * n + i]) > TOLERANCE) {
+            if (fabs(A[i * n + j] - A[j * n + i]) >
+                TOLERANCE * (fabs(A[i * n + j]) + fabs(A[j * n + i]) + 1.0)) {
                 result = SOLVER_NOT_SPD_MATRIX;
                 goto cleanup;
             }
@@ -5425,7 +5393,8 @@ int conjugate_residual(double *A, double *b, double *x, int n, solver_info *info
     // Check matrix symmetry
     for (int i = 0; i < n; i++) {
         for (int j = 0; j < i; j++) {
-            if (fabs(A[i * n + j] - A[j * n + i]) > TOLERANCE) {
+            if (fabs(A[i * n + j] - A[j * n + i]) >
+                TOLERANCE * (fabs(A[i * n + j]) + fabs(A[j * n + i]) + 1.0)) {
                 result = SOLVER_NOT_SPD_MATRIX;
                 goto cleanup;
             }
@@ -5556,7 +5525,8 @@ int symmlq(double *A, double *b, double *x, int n, solver_info *info) {
     // The symmetric Lanczos recurrence below is only valid for symmetric A.
     for (int i = 0; i < n; i++) {
         for (int j = 0; j < i; j++) {
-            if (fabs(A[i * n + j] - A[j * n + i]) > TOLERANCE) {
+            if (fabs(A[i * n + j] - A[j * n + i]) >
+                TOLERANCE * (fabs(A[i * n + j]) + fabs(A[j * n + i]) + 1.0)) {
                 set_info(info, 0, NAN, SOLVER_NOT_SPD_MATRIX);
                 return SOLVER_NOT_SPD_MATRIX;
             }
@@ -5744,7 +5714,8 @@ int chebyshev(double *A, double *b, double *x, int n, solver_info *info) {
 
     for (int i = 0; i < n; i++) {
         for (int j = 0; j < i; j++) {
-            if (fabs(A[i * n + j] - A[j * n + i]) > TOLERANCE) {
+            if (fabs(A[i * n + j] - A[j * n + i]) >
+                TOLERANCE * (fabs(A[i * n + j]) + fabs(A[j * n + i]) + 1.0)) {
                 result = SOLVER_NOT_SPD_MATRIX;
                 goto cleanup;
             }
