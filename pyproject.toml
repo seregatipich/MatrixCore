@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "matrixcore"
-version = "0.2.1"
+version = "0.2.2"
 description = "Educational library of 50 hand-written C solvers for dense linear systems Ax = b, exposed through a Cython/NumPy interface."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -37,6 +37,7 @@ Issues = "https://github.com/seregatipich/MatrixCore/issues"
 [project.optional-dependencies]
 test = ["pytest>=7", "pytest-cov", "hypothesis"]
 dev = ["ruff", "mypy", "pre-commit"]
+dataset = ["ssgetpy>=1.0rc1"]
 docs = ["sphinx", "furo", "myst-parser"]
 
 [tool.setuptools]
